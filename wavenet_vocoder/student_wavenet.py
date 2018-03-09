@@ -84,7 +84,7 @@ class StudentWaveNet(nn.Module):
             self.first_conv = Conv1d1x1(out_channels, residual_channels)
         self.iaf_layers = nn.ModuleList()  # iaf层
         self.conv_layers = nn.ModuleList()
-        for layer_size in iaf_layer_size:
+        for layer_size in iaf_layer_size: # build iaf layers -->4 layers by size 10,10,10,30
             # IAF LAYERS
             iaf_layer = nn.ModuleList()
             for layer in range(layer_size):
@@ -175,7 +175,7 @@ class StudentWaveNet(nn.Module):
         scale_tot = Variable(torch.rand(z.size()).fill_(1).cuda())
         s = []
         m = []
-        for iaf in self.iaf_layers:
+        for iaf in self.iaf_layers:    # iaf layer forward
             new_z = self.first_conv(z)
             for f in iaf:
                 new_z, h = f(new_z, c, g_bct)
@@ -185,7 +185,7 @@ class StudentWaveNet(nn.Module):
             s.append(scale_f)
             m.append(mu_f)
             z = z * scale_f + mu_f
-        for i in range(len(s)):
+        for i in range(len(s)): # update mu_tot and scale_tot base on the paper
             ss = Variable(torch.rand(z.size()).fill_(1).cuda())
             for j in range(i + 1, len(s)):
                 ss = ss * s[j]
