@@ -308,14 +308,14 @@ def __train_step(phase, epoch, global_step, global_test_step,
         a = s.permute(0, 2, 1)
         h_ps = torch.sum((torch.log(a) + 2) * mask) / mask.sum()
         h_s += h_ps
-        # ss = h_pt_ps - h_ps
-        cross_entropy_loss_sum += ((y - student_predict) ** 2).mean()
+        ss = h_pt_ps - h_ps
+        cross_entropy_loss_sum += ss
     # average over sample_T
-    loss = hpts / sample_T - h_s / sample_T
+    # loss = hpts / sample_T - h_s / sample_T
     cross_entropy_loss = cross_entropy_loss_sum / sample_T
     power_loss = get_power_loss(to_numpy(student_predict), to_numpy(y))
     # print(power_loss )
-    # loss = cross_entropy_loss  # + power_loss
+    loss = cross_entropy_loss  # + power_loss
     rs = loss.cpu().data.numpy()
     cross_entropy_loss = to_numpy(cross_entropy_loss) / sample_T
     if rs == np.isinf(rs):
