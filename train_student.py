@@ -1,3 +1,4 @@
+# coding:utf-8
 """Trainining script for WaveNet vocoder
 
 usage: train.py [options]
@@ -61,7 +62,7 @@ from hparams import hparams, hparams_debug_string
 from scipy.stats import logistic
 
 fs = hparams.sample_rate
-
+gpu_count = torch.cuda.device_count()
 global_step = 0
 global_test_step = 0
 global_epoch = 0
@@ -115,26 +116,34 @@ def time_string():
     return datetime.now().strftime('%Y-%m-%d %H:%M')
 
 
-def get_power_loss(sample_, x_):
+def get_power_loss(sample_, x_, n_fft=512, before=True):
     batch = sample_.shape[0]
     T = sample_.shape[1]
     s = 0
-    for i in range(batch):
-        ss = np.abs(librosa.stft(sample_[i][0])) ** 2 - np.abs(librosa.stft(x_[i][0])) ** 2
-        s += np.sum((ss / ss.shape[0]) ** 2)
-    return s / batch
+    if before:
+        for i in range(batch):
+            ss = np.mean(np.abs(librosa.stft(sample_[i][0], n_fft=n_fft))) ** 2 - np.mean(
+                np.abs(librosa.stft(x_[i][0], n_fft=n_fft))) ** 2
+            s += ss ** 2
+        return s / batch
+    else:
+        for i in range(batch):
+            ss = np.abs(librosa.stft(sample_[i][0], n_fft=n_fft)) ** 2 - np.abs(librosa.stft(x_[i][0]),
+                                                                                n_fft=n_fft) ** 2
+            s += np.mean((ss / ss.shape[0]) ** 2)
+        return s / batch
 
 
 def to_numpy(x):
     return x.cpu().data.numpy()
 
 
-def eval_model(global_step, writer, model, y, c, g, input_lengths, eval_dir, ema=None):
+def eval_model(global_step, writer, teacher, student, y, c, g, input_lengths, eval_dir, ema=None):
     if ema is not None:
         print("Using averaged model for evaluation")
-        model = clone_as_averaged_model(model, ema)
+        model = clone_as_averaged_model(student, ema)
 
-    model.eval()
+    student.eval()
     idx = np.random.randint(0, len(y))
     length = input_lengths[idx].data.cpu().numpy()[0]
 
@@ -168,19 +177,22 @@ def eval_model(global_step, writer, model, y, c, g, input_lengths, eval_dir, ema
     else:
         initial_input = Variable(torch.zeros(1, 1, 1).fill_(initial_value))
     initial_input = initial_input.cuda() if use_cuda else initial_input
-    y_hat = model.incremental_forward(
+    y_teacher = teacher.incremental_forward(
         initial_input, c=c, g=g, T=length, tqdm=tqdm, softmax=True, quantize=True,
         log_scale_min=hparams.log_scale_min)
 
     if is_mulaw_quantize(hparams.input_type):
-        y_hat = y_hat.max(1)[1].view(-1).long().cpu().data.numpy()
+        y_hat = y_teacher.max(1)[1].view(-1).long().cpu().data.numpy()
         y_hat = P.inv_mulaw_quantize(y_hat, hparams.quantize_channels)
         y_target = P.inv_mulaw_quantize(y_target, hparams.quantize_channels)
     elif is_mulaw(hparams.input_type):
-        y_hat = P.inv_mulaw(y_hat.view(-1).cpu().data.numpy(), hparams.quantize_channels)
+        y_hat = P.inv_mulaw(y_teacher.view(-1).cpu().data.numpy(), hparams.quantize_channels)
         y_target = P.inv_mulaw(y_target, hparams.quantize_channels)
     else:
-        y_hat = y_hat.view(-1).cpu().data.numpy()
+        y_hat = y_teacher.view(-1).cpu().data.numpy()
+    # y_student
+    # z noise sample from logistic
+    # y_student = student()
 
     # Save audio
     os.makedirs(eval_dir, exist_ok=True)
@@ -238,6 +250,7 @@ def save_states(global_step, writer, y_hat, y, y_student, input_lengths, checkpo
     path = join(audio_dir, "step{:09d}_target.wav".format(global_step))
     librosa.output.write_wav(path, y, sr=hparams.sample_rate)
     path = join(audio_dir, "step{:09d}_student.wav".format(global_step))
+    y_student = y_student.reshape(y.shape)
     librosa.output.write_wav(path, y_student, sr=hparams.sample_rate)
 
 
@@ -261,14 +274,19 @@ def __train_step(phase, epoch, global_step, global_test_step,
         student.eval()
         step = global_test_step
 
+    # ---------------------- the parallel wavenet use constant learning rate = 0.0002
     # Learning rate schedule
-    current_lr = hparams.initial_learning_rate
-    if train and hparams.lr_schedule is not None:
-        lr_schedule_f = getattr(lrschedule, hparams.lr_schedule)
-        current_lr = lr_schedule_f(
-            hparams.initial_learning_rate, step, **hparams.lr_schedule_kwargs)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = current_lr
+    # current_lr = hparams.initial_learning_rate
+    # if train and hparams.lr_schedule is not None:
+    #     lr_schedule_f = getattr(lrschedule, hparams.lr_schedule)
+    #     current_lr = lr_schedule_f(
+    #         hparams.initial_learning_rate, step, **hparams.lr_schedule_kwargs)
+    #     if gpu_count>1:
+    #         for param_group in optimizer.module.param_groups:
+    #             param_group['lr'] = current_lr
+    #     else:
+    #         for param_group in optimizer.param_groups:
+    #             param_group['lr'] = current_lr
     optimizer.zero_grad()
 
     # Prepare data
@@ -290,10 +308,11 @@ def __train_step(phase, epoch, global_step, global_test_step,
     mu, scale = student(x, c=c, g=g, softmax=False)
     m, s = mu, scale
     mu, scale = to_numpy(mu), to_numpy(scale)
-    cross_entropy_loss_sum = 0
+    kl_loss = 0
     hpts = 0
     h_s = 0
     sample_T = 5  # Multi-sample from student
+    power_loss_sum = 0
     for i in range(sample_T):
         student_predict = np.random.logistic(mu, scale)
         p_s = probs_logistic(mu, scale, student_predict)
@@ -302,31 +321,34 @@ def __train_step(phase, epoch, global_step, global_test_step,
         student_predict = Variable(torch.from_numpy(student_predict).float()).cuda()
         y_hat = teacher(student_predict)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
         student_predict = student_predict.permute(0, 2, 1)
-        teacher_log_p = discretized_mix_logistic_loss(y_hat, student_predict, reduce=False)  # log(Pt)
-        h_pt_ps = torch.sum(teacher_log_p * p_s * mask) / mask.sum()
+        _, teacher_log_p = discretized_mix_logistic_loss(y_hat, y, reduce=False)  # log(Pt)
+        h_pt_ps = torch.sum(teacher_log_p * p_s * mask)  # / mask.sum()
+        power_loss_sum += get_power_loss(to_numpy(student_predict), to_numpy(x))
         hpts += torch.sum(teacher_log_p) / mask.sum()
         a = s.permute(0, 2, 1)
-        h_ps = torch.sum((torch.log(a) + 2) * mask) / mask.sum()
+        h_ps = torch.sum(torch.log(p_s) * p_s * mask)  # / mask.sum()
+        # h_ps = torch.sum((torch.log(a) + 2) * mask) / mask.sum()
         h_s += h_ps
         ss = h_pt_ps - h_ps
-        cross_entropy_loss_sum += ss
+        kl_loss += ss
+
     # average over sample_T
     # loss = hpts / sample_T - h_s / sample_T
-    cross_entropy_loss = cross_entropy_loss_sum / sample_T
-    power_loss = get_power_loss(to_numpy(student_predict), to_numpy(y))
-    # print(power_loss )
-    loss = cross_entropy_loss  # + power_loss
-    rs = loss.cpu().data.numpy()
-    cross_entropy_loss = to_numpy(cross_entropy_loss) / sample_T
+    kl_loss = kl_loss / sample_T
+    power_loss = power_loss_sum / sample_T
+    loss = kl_loss + 0.1 * power_loss
+    rs = kl_loss.cpu().data.numpy()
     if rs == np.isinf(rs):
         print('inf detected')
     else:
-        print(rs, np.max(scale), np.max(mu), cross_entropy_loss)
-    # loss = Variable(cross_entropy_loss., requires_grad=True).cuda()
+        # print(power_loss, np.mean(scale), np.mean(mu), kl_loss)
+        print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}'.format(power_loss, np.mean(scale), np.mean(mu),
+                                                                           to_numpy(kl_loss)))
+    # loss = Variable(torch.FloatTensor(1).fill_(loss), requires_grad=True).cuda()
     if train and step > 0 and step % hparams.checkpoint_interval == 0:
         save_states(step, writer, y_hat, y, student_predict, input_lengths, checkpoint_dir)
         save_checkpoint(student, optimizer, step, checkpoint_dir, epoch, ema)
-    if do_eval:
+    if do_eval and False:
         # NOTE: use train step (i.e., global_step) for filename
         # eval_model(global_step, writer, model, y, c, g, input_lengths, eval_dir, ema)
         eval_model(global_step, writer, student, y, c, g, input_lengths, eval_dir, ema)
@@ -336,6 +358,8 @@ def __train_step(phase, epoch, global_step, global_test_step,
         loss.backward()
         if clip_thresh > 0:
             grad_norm = torch.nn.utils.clip_grad_norm(student.parameters(), clip_thresh)
+        if gpu_count > 1:
+            optimizer.module.step()
         optimizer.step()
         # update moving average
         if ema is not None:
@@ -358,6 +382,7 @@ def train_loop(student, teacher, data_loaders, optimizer, writer, checkpoint_dir
         student = student.cuda()
         teacher = teacher.cuda()
 
+    # set false
     if hparams.exponential_moving_average:
         ema = ExponentialMovingAverage(hparams.ema_decay)
         for name, param in student.named_parameters():
@@ -391,7 +416,7 @@ def train_loop(student, teacher, data_loaders, optimizer, writer, checkpoint_dir
                     print("[{}] Eval at train step {}".format(phase, global_step))
 
                 # Do step
-                do_eval = False
+                # do_eval = False
                 running_loss += __train_step(
                     phase, global_epoch, global_step, global_test_step, teacher, student,
                     optimizer, writer, x, y, c, g, input_lengths,
@@ -563,7 +588,8 @@ if __name__ == "__main__":
     # args = docopt(__doc__)
     args = {
         "--checkpoint-dir": 'checkpoints_student',
-        "--checkpoint_teacher": './checkpoints_teacher/checkpoint_step000700000.pth',  # the pre-trained teacher model
+        "--checkpoint_teacher": './checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth',
+        # the pre-trained teacher model
         "--checkpoint_student": None,  # 是否加载
         "--checkpoint": None,
         "--restore-parts": None,
@@ -614,26 +640,32 @@ if __name__ == "__main__":
     teacher_model = build_model(name='teacher')
 
     print(teacher_model)
-    if use_cuda:
-        teacher_model = teacher_model.cuda()
-        student_model = student_model.cuda()
 
-    receptive_field = teacher_model.receptive_field
+    if use_cuda:
+        if gpu_count > 1:
+            student_model = torch.nn.DataParallel(student_model, device_ids=range(gpu_count))
+            teacher_model = torch.nn.DataParallel(teacher_model, device_ids=range(gpu_count))
+            receptive_field = teacher_model.module.receptive_field
+        else:
+            teacher_model = teacher_model.cuda()
+            student_model = student_model.cuda()
+            receptive_field = teacher_model.module.receptive_field
     print("Receptive field (samples / ms): {} / {}".format(
         receptive_field, receptive_field / fs * 1000))
     # teacher和student share 大部分的参数
-    optimizer = optim.Adam(student_model.parameters(),
-                           lr=hparams.initial_learning_rate,
-                           betas=(hparams.adam_beta1, hparams.adam_beta2),
-                           eps=hparams.adam_eps,
-                           weight_decay=hparams.weight_decay)
-
+    # student net use
+    # optimizer = optim.Adam(student_model.parameters(),
+    #                        lr=hparams.initial_learning_rate,
+    #                        betas=(hparams.adam_beta1, hparams.adam_beta2),
+    #                        eps=hparams.adam_eps,
+    #                        weight_decay=hparams.weight_decay)
+    # when use multi-gpu
+    optimizer = optim.ASGD(student_model.parameters(), lr=2 * 0.0001)
+    if gpu_count > 1:
+        optimizer = torch.nn.DataParallel(optimizer, device_ids=range(gpu_count))
     # load teacher model first
     restore_parts(checkpoint_teacher_path, teacher_model)
     teacher_model.eval()  # the teacher use eval not to train the parameters
-    # 是否加载继续训练
-    # if checkpoint_restore_parts is not None:
-    #     restore_parts(checkpoint_restore_parts, student_model)
 
     # Load checkpoints
     if checkpoint_student_path is not None:
