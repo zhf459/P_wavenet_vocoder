@@ -96,13 +96,13 @@ def discretized_mix_logistic_loss(y_hat, y, num_classes=256, log_scale_min=-7.0,
     inner_out = inner_cond * log_one_minus_cdf_min + (1. - inner_cond) * inner_inner_out
     cond = (y < -0.999).float()
     log_probs = cond * log_cdf_plus + (1. - cond) * inner_out
-
+    a = log_probs
     log_probs = torch.sum(log_probs, dim=-1, keepdim=True) + F.log_softmax(logit_probs, -1)
-
+    _log_probs = a + F.log_softmax(logit_probs, -1)
     if reduce:
-        return -torch.sum(log_sum_exp(log_probs))
+        return -torch.sum(log_sum_exp(log_probs)), -torch.sum(log_sum_exp(log_probs))
     else:
-        return -log_sum_exp(log_probs).unsqueeze(-1)
+        return -log_sum_exp(log_probs).unsqueeze(-1), -log_sum_exp(_log_probs).unsqueeze(-1)
 
 
 def to_one_hot(tensor, n, fill_with=1.):
@@ -153,18 +153,23 @@ def sample_from_discretized_mix_logistic(y, log_scale_min=-7.0):
 
 
 def sigmoid(x):
-    return 1.0/(1+np.exp(-x))
+    return 1.0 / (1 + np.exp(-x))
 
 
-def probs_logistic(mu, scale, y, num_classes=256, log_scale_min=-14):
+def probs_logistic(mu, scale, y, num_classes=65536, log_scale_min=-14):
     means = mu
     # scale = torch.clamp(scale, min=torch.exp(log_scale_min))
-    scale = np.clip(scale,np.exp(log_scale_min),np.inf)
+    log_scales = np.log(scale)
+    scale = np.clip(scale, np.exp(log_scale_min), np.inf)
     centered_y = y - means
-    inv_stdv = 1/scale
+    inv_stdv = 1 / scale
     plus_in = inv_stdv * (centered_y + 1. / (num_classes - 1))
     cdf_plus = sigmoid(plus_in)
     min_in = inv_stdv * (centered_y - 1. / (num_classes - 1))
     cdf_min = sigmoid(min_in)
     cdf_delta = cdf_plus - cdf_min
+    mid_in = inv_stdv * centered_y
+    # log probability in the center of the bin, to be used in extreme cases
+    # (not actually used in our code)
+ #    log_pdf_mid = mid_in - log_scales - 2. * F.softplus(mid_in)
     return cdf_delta

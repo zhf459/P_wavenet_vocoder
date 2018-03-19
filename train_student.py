@@ -360,7 +360,8 @@ def __train_step(phase, epoch, global_step, global_test_step,
             grad_norm = torch.nn.utils.clip_grad_norm(student.parameters(), clip_thresh)
         if gpu_count > 1:
             optimizer.module.step()
-        optimizer.step()
+        else:
+            optimizer.step()
         # update moving average
         if ema is not None:
             for name, param in student.named_parameters():
@@ -372,7 +373,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     if train:
         if clip_thresh > 0:
             writer.add_scalar("gradient norm", grad_norm, step)
-        writer.add_scalar("learning rate", current_lr, step)
+        # writer.add_scalar("learning rate", current_lr, step)
 
     return loss.data[0]
 

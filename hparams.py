@@ -87,7 +87,7 @@ hparams = tf.contrib.training.HParams(
 
     # Data loader
     pin_memory=True,
-    num_workers=2,
+    num_workers=-1,
 
     # train/test
     # test size can be specified as portion or num samples
@@ -98,7 +98,7 @@ hparams = tf.contrib.training.HParams(
     # Loss
 
     # Training:
-    batch_size=1,
+    batch_size=2,
     adam_beta1=0.9,
     adam_beta2=0.999,
     adam_eps=1e-8,
