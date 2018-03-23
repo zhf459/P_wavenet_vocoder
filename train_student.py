@@ -324,7 +324,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     mu, scale = to_numpy(mu), to_numpy(scale)
     kl_loss, h_s = 0, 0
     _h_pt_ps = 0
-    sample_T, kl_loss_sum = 0, Variable(torch.FloatTensor(1).float(), requires_grad=True).cuda()
+    sample_T, kl_loss_sum = 5, Variable(torch.FloatTensor(1).float(), requires_grad=True).cuda()
     power_loss_sum = 0
     for i in range(sample_T):
         z = np.random.logistic(0, 1, x.shape)
