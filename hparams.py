@@ -59,8 +59,8 @@ hparams = tf.contrib.training.HParams(
     # This should equal to `quantize_channels` if mu-law quantize enabled
     # otherwise num_mixture * 3 (pi, mean, log_scale)
     out_channels=10 * 3,
-    layers=30,
-    stacks=3,
+    layers=24,
+    stacks=4,
     residual_channels=512,
     gate_channels=512,  # split into 2 gropus internally for gated activation
     skip_out_channels=256,
