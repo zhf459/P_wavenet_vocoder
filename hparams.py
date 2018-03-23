@@ -26,11 +26,11 @@ hparams = tf.contrib.training.HParams(
     # **NOTE**: if you change the one of the two parameters below, you need to
     # re-run preprocessing before training.
     # **NOTE**: scaler input (raw or mulaw) is experimental. Use it your own risk.
-    input_type="mulaw",
+    input_type="raw",
     quantize_channels=65536,  # 65536 or 256
 
     # Audio:
-    sample_rate=24000,
+    sample_rate=22050,
     # this is only valid for mulaw is True
     silence_threshold=2,
     num_mels=80,
@@ -87,7 +87,7 @@ hparams = tf.contrib.training.HParams(
 
     # Data loader
     pin_memory=True,
-    num_workers=-1,
+    num_workers=2,
 
     # train/test
     # test size can be specified as portion or num samples
@@ -98,7 +98,7 @@ hparams = tf.contrib.training.HParams(
     # Loss
 
     # Training:
-    batch_size=2,
+    batch_size=4,
     adam_beta1=0.9,
     adam_beta2=0.999,
     adam_eps=1e-8,
@@ -113,7 +113,7 @@ hparams = tf.contrib.training.HParams(
     # This is needed for those who don't have huge GPU memory...
     # if both are None, then full audio samples are used
     max_time_sec=None,
-    max_time_steps=7680,
+    max_time_steps=8000,
     # Hold moving averaged parameters and use them for evaluation
     exponential_moving_average=True,
     # averaged = decay * averaged + (1 - decay) * x
@@ -121,8 +121,8 @@ hparams = tf.contrib.training.HParams(
 
     # Save
     # per-step intervals
-    checkpoint_interval=10000,
-    train_eval_interval=10000,
+    checkpoint_interval=100,
+    train_eval_interval=100,
     # per-epoch interval
     test_eval_epoch_interval=5,
     save_optimizer_state=True,

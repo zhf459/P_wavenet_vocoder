@@ -49,18 +49,18 @@ if use_cuda:
 gpu_count = torch.cuda.device_count()
 
 def sanity_check(model, c, g):
-    if gpu_count>1:
-        model_module = model.module
-    else:
-        model_module = model
-    if model_module.has_speaker_embedding():
+    # if gpu_count>1:
+    #     model_module = model.module
+    # else:
+    #     model_module = model
+    if model.has_speaker_embedding():
         if g is None:
             raise RuntimeError("WaveNet expects speaker embedding, but speaker-id is not provided")
     else:
         if g is not None:
             raise RuntimeError("WaveNet expects no speaker embedding, but speaker-id is provided")
 
-    if model_module.local_conditioning_enabled():
+    if model.local_conditioning_enabled():
         if c is None:
             raise RuntimeError("WaveNet expects conditional features, but not given")
     else:
@@ -530,14 +530,17 @@ def build_model(name='teacher'):
         return StudentWaveNet()
 
 
-def save_waveplot(path, y_hat, y_target):
+def save_waveplot(path, y_hat, y_target,y_teacher=None):
     sr = hparams.sample_rate
-
+    size = 3 if y_teacher is not None else 2
     plt.figure(figsize=(16, 6))
-    plt.subplot(2, 1, 1)
+    plt.subplot(size, 1, 1)
     librosa.display.waveplot(y_target, sr=sr)
-    plt.subplot(2, 1, 2)
+    plt.subplot(size, 1, 2)
     librosa.display.waveplot(y_hat, sr=sr)
+    if size == 3:
+        plt.subplot(size, 1, 3)
+        librosa.display.waveplot(y_teacher, sr=sr)
     plt.tight_layout()
     plt.savefig(path, format="png")
     plt.close()

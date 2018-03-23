@@ -57,6 +57,7 @@ class StudentWaveNet(nn.Module):
     def __init__(self, out_channels=2,
                  layers=30, stacks=3,
                  iaf_layer_size=[10, 10, 10, 30],
+                 # iaf_layer_size=[10, 30],
                  residual_channels=64,
                  gate_channels=64,
                  # skip_out_channels=-1,
@@ -79,12 +80,14 @@ class StudentWaveNet(nn.Module):
         assert layers % stacks == 0
         layers_per_stack = layers // stacks
         if scalar_input:
-            self.first_conv = Conv1d1x1(1, residual_channels)
+            self.first_conv = nn.ModuleList([Conv1d1x1(1, residual_channels) for _ in range(len(iaf_layer_size))])
         else:
-            self.first_conv = Conv1d1x1(out_channels, residual_channels)
+            self.first_conv = nn.ModuleList(
+                [Conv1d1x1(out_channels, residual_channels) for _ in range(len(iaf_layer_size))])
         self.iaf_layers = nn.ModuleList()  # iaf层
-        self.conv_layers = nn.ModuleList()
-        for layer_size in iaf_layer_size: # build iaf layers -->4 layers by size 10,10,10,30
+        self.last_layers = nn.ModuleList()
+
+        for layer_size in iaf_layer_size:  # build iaf layers -->4 layers by size 10,10,10,30
             # IAF LAYERS
             iaf_layer = nn.ModuleList()
             for layer in range(layer_size):
@@ -98,16 +101,14 @@ class StudentWaveNet(nn.Module):
                     cin_channels=cin_channels,
                     gin_channels=gin_channels,
                     weight_normalization=weight_normalization)
-                self.conv_layers.append(conv)
                 iaf_layer.append(conv)
-                # the last layer
             self.iaf_layers.append(iaf_layer)
-        self.last_layer = nn.ModuleList([  # iaf的最后一层
-            nn.ReLU(inplace=True),
-            Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
-            # nn.ReLU(inplace=True),
-            # Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
-        ])
+            self.last_layers.append(nn.ModuleList([  # iaf的最后一层
+                nn.ReLU(inplace=True),
+                Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
+                # nn.ReLU(inplace=True),
+                # Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
+            ]))
 
         if gin_channels > 0:
             assert n_speakers is not None
@@ -139,7 +140,7 @@ class StudentWaveNet(nn.Module):
     def local_conditioning_enabled(self):
         return self.cin_channels > 0
 
-    def forward(self, x, c=None, g=None, softmax=False):
+    def forward(self, z, c=None, g=None, softmax=False):
         """Forward step
 
         Args:
@@ -152,8 +153,8 @@ class StudentWaveNet(nn.Module):
             Variable: output, shape B x out_channels x T
         """
         # Expand global conditioning features to all time steps
-        B, _, T = x.size()
-        z = Variable(torch.from_numpy(np.random.logistic(0, 1, size=x.size())).float()).cuda()
+        B, _, T = z.size()
+
         if g is not None:
             g = self.embed_speakers(g.view(B, -1))
             assert g.dim() == 3
@@ -168,158 +169,31 @@ class StudentWaveNet(nn.Module):
                 c = f(c)
             # B x C x T
             c = c.squeeze(1)
-            assert c.size(-1) == x.size(-1)
+            assert c.size(-1) == z.size(-1)
 
         # Feed data to network
         mu_tot = Variable(torch.rand(z.size()).fill_(0)).cuda()
         scale_tot = Variable(torch.rand(z.size()).fill_(1).cuda())
         s = []
         m = []
-        for iaf in self.iaf_layers:    # iaf layer forward
-            new_z = self.first_conv(z)
+        index = 0
+        for first_con, iaf, last_layer in zip(self.first_conv, self.iaf_layers, self.last_layers):  # iaf layer forward
+            new_z = first_con(z)
             for f in iaf:
                 new_z, h = f(new_z, c, g_bct)
-            for f in self.last_layer:  # one mixture layer
+            for f in last_layer:
                 new_z = f(new_z)
             mu_f, scale_f = new_z[:, :1, :], torch.exp(new_z[:, 1:, :])
             s.append(scale_f)
             m.append(mu_f)
             z = z * scale_f + mu_f
-        for i in range(len(s)): # update mu_tot and scale_tot base on the paper
+        for i in range(len(s)):  # update mu_tot and scale_tot base on the paper
             ss = Variable(torch.rand(z.size()).fill_(1).cuda())
             for j in range(i + 1, len(s)):
                 ss = ss * s[j]
             mu_tot = mu_tot + m[i] * ss
             scale_tot = scale_tot * s[i]
         return mu_tot, scale_tot
-
-    def incremental_forward(self, initial_input=None, c=None, g=None,
-                            T=100, test_inputs=None,
-                            tqdm=lambda x: x, softmax=True, quantize=True,
-                            log_scale_min=-7.0):
-        """Incremental forward step
-
-        Due to linearized convolutions, inputs of shape (B x C x T) are reshaped
-        to (B x T x C) internally and fed to the network for each time step.
-        Input of each time step will be of shape (B x 1 x C).
-
-        Args:
-            initial_input (Variable): Initial decoder input, (B x C x 1)
-            c (Variable): Local conditioning features, shape (B x C' x T)
-            g (Variable): Global conditioning features, shape (B x C'' or B x C''x 1)
-            T (int): Number of time steps to generate.
-            test_inputs (Variable): Teacher forcing inputs (for debugging)
-            tqdm (lamda) : tqdm
-            softmax (bool) : Whether applies softmax or not
-            quantize (bool): Whether quantize softmax output before feeding the
-              network output to input for the next time step. TODO: rename
-            log_scale_min (float):  Log scale minimum value.
-
-        Returns:
-            Variable: Generated one-hot encoded samples. B x C x T　
-              or scaler vector B x 1 x T
-        """
-        self.clear_buffer()
-        B = 1
-
-        # Note: shape should be **(B x T x C)**, not (B x C x T) opposed to
-        # batch forward due to linealized convolution
-        if test_inputs is not None:
-            if self.scalar_input:
-                if test_inputs.size(1) == 1:
-                    test_inputs = test_inputs.transpose(1, 2).contiguous()
-            else:
-                if test_inputs.size(1) == self.out_channels:
-                    test_inputs = test_inputs.transpose(1, 2).contiguous()
-
-            B = test_inputs.size(0)
-            if T is None:
-                T = test_inputs.size(1)
-            else:
-                T = max(T, test_inputs.size(1))
-        # cast to int in case of numpy.int64...
-        T = int(T)
-
-        # Global conditioning
-        if g is not None:
-            g = self.embed_speakers(g.view(B, -1))
-            assert g.dim() == 3
-            # (B x gin_channels, 1)
-            g = g.transpose(1, 2)
-        g_btc = _expand_global_features(B, T, g, bct=False)
-
-        # Local conditioning
-        if c is not None and self.upsample_conv is not None:
-            assert c is not None
-            # B x 1 x C x T
-            c = c.unsqueeze(1)
-            for f in self.upsample_conv:
-                c = f(c)
-            # B x C x T
-            c = c.squeeze(1)
-            assert c.size(-1) == T
-        if c is not None and c.size(-1) == T:
-            c = c.transpose(1, 2).contiguous()
-
-        outputs = []
-        if initial_input is None:
-            if self.scalar_input:
-                initial_input = Variable(torch.zeros(B, 1, 1))
-            else:
-                initial_input = Variable(torch.zeros(B, 1, self.out_channels))
-                initial_input[:, :, 127] = 1  # TODO: is this ok?
-            # https://github.com/pytorch/pytorch/issues/584#issuecomment-275169567
-            if next(self.parameters()).is_cuda:
-                initial_input = initial_input.cuda()
-        else:
-            if initial_input.size(1) == self.out_channels:
-                initial_input = initial_input.transpose(1, 2).contiguous()
-
-        current_input = initial_input
-        for t in tqdm(range(T)):
-            if test_inputs is not None and t < test_inputs.size(1):
-                current_input = test_inputs[:, t, :].unsqueeze(1)
-            else:
-                if t > 0:
-                    current_input = outputs[-1]
-
-            # Conditioning features for single time step
-            ct = None if c is None else c[:, t, :].unsqueeze(1)
-            gt = None if g is None else g_btc[:, t, :].unsqueeze(1)
-
-            x = current_input
-            x = self.first_conv.incremental_forward(x)
-            skips = None
-            for f in self.conv_layers:
-                x, h = f.incremental_forward(x, ct, gt)
-                skips = h if skips is None else (skips + h) * math.sqrt(0.5)
-            x = skips
-            for f in self.last_conv_layers:
-                try:
-                    x = f.incremental_forward(x)
-                except AttributeError:
-                    x = f(x)
-
-            # Generate next input by sampling
-            if self.scalar_input:
-                x = sample_from_discretized_mix_logistic(
-                    x.view(B, -1, 1), log_scale_min=log_scale_min)
-            else:
-                x = F.softmax(x.view(B, -1), dim=1) if softmax else x.view(B, -1)
-                if quantize:
-                    sample = np.random.choice(
-                        np.arange(self.out_channels), p=x.view(-1).data.cpu().numpy())
-                    x.zero_()
-                    x[:, sample] = 1.0
-            outputs += [x]
-
-        # T x B x C
-        outputs = torch.stack(outputs)
-        # B x C x T
-        outputs = outputs.transpose(0, 1).transpose(1, 2).contiguous()
-
-        self.clear_buffer()
-        return outputs
 
     def clear_buffer(self):
         self.first_conv.clear_buffer()

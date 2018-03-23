@@ -38,11 +38,14 @@ def write_metadata(metadata, out_dir):
 if __name__ == "__main__":
     # args = docopt(__doc__)
     # name = args["<name>"]
-    name = 'cmu_arctic'
+    name = 'ljspeech'
     # in_dir = args["<in_dir>"]
-    in_dir = '/home/zeng/work/data/cmu_arctic'
-    # out_dir = args["<out_dir>"]
-    out_dir = '/home/zeng/work/pycharm/wavenet_vocoder/data/cmu_arctic'
+    if name == 'cmu_acrtic':
+        in_dir = '/home/jinqiangzeng/work/data/speech/cmu_arctic'
+        out_dir = './data/cmu_arctic'
+    elif name == 'ljspeech':
+        in_dir = '/home/jinqiangzeng/work/data/speech/ljspeech/LJSpeech-1.0'
+        out_dir = './data/ljspeech'
     num_workers = None  # args["--num_workers"]
     num_workers = cpu_count() - 1 if num_workers is None else int(num_workers)
 

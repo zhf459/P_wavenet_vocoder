@@ -156,11 +156,11 @@ def sigmoid(x):
     return 1.0 / (1 + np.exp(-x))
 
 
-def probs_logistic(mu, scale, y, num_classes=65536, log_scale_min=-14):
+def probs_logistic(mu, scale, y, num_classes=65536/2, log_scale_min=-14):
     means = mu
     # scale = torch.clamp(scale, min=torch.exp(log_scale_min))
     log_scales = np.log(scale)
-    scale = np.clip(scale, np.exp(log_scale_min), np.inf)
+    # scale = np.clip(scale, np.exp(log_scale_min), np.inf)
     centered_y = y - means
     inv_stdv = 1 / scale
     plus_in = inv_stdv * (centered_y + 1. / (num_classes - 1))
@@ -168,8 +168,5 @@ def probs_logistic(mu, scale, y, num_classes=65536, log_scale_min=-14):
     min_in = inv_stdv * (centered_y - 1. / (num_classes - 1))
     cdf_min = sigmoid(min_in)
     cdf_delta = cdf_plus - cdf_min
-    mid_in = inv_stdv * centered_y
-    # log probability in the center of the bin, to be used in extreme cases
-    # (not actually used in our code)
- #    log_pdf_mid = mid_in - log_scales - 2. * F.softplus(mid_in)
+
     return cdf_delta
