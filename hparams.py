@@ -59,8 +59,8 @@ hparams = tf.contrib.training.HParams(
     # This should equal to `quantize_channels` if mu-law quantize enabled
     # otherwise num_mixture * 3 (pi, mean, log_scale)
     out_channels=10 * 3,
-    layers=30,
-    stacks=3,
+    layers=24,
+    stacks=4,
     residual_channels=512,
     gate_channels=512,  # split into 2 gropus internally for gated activation
     skip_out_channels=256,
@@ -98,7 +98,7 @@ hparams = tf.contrib.training.HParams(
     # Loss
 
     # Training:
-    batch_size=4,
+    batch_size=1,
     adam_beta1=0.9,
     adam_beta2=0.999,
     adam_eps=1e-8,
@@ -121,8 +121,8 @@ hparams = tf.contrib.training.HParams(
 
     # Save
     # per-step intervals
-    checkpoint_interval=100,
-    train_eval_interval=100,
+    checkpoint_interval=1000,
+    train_eval_interval=1000,
     # per-epoch interval
     test_eval_epoch_interval=5,
     save_optimizer_state=True,
