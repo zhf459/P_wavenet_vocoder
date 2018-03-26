@@ -28,7 +28,7 @@ import librosa.display
 from matplotlib import pyplot as plt
 import sys
 import os
-
+from dataLoader import DataLoader
 from sklearn.model_selection import train_test_split
 from keras.utils import np_utils
 from tensorboardX import SummaryWriter
@@ -271,7 +271,7 @@ def get_data_loaders(data_root, speaker_id, test_shuffle=True):
             shuffle = test_shuffle
 
         dataset = PyTorchDataset(X, Mel)
-        data_loader = data_utils.DataLoader(
+        data_loader = DataLoader(
             dataset, batch_size=hparams.batch_size,
             num_workers=hparams.num_workers, sampler=sampler, shuffle=shuffle,
             collate_fn=collate_fn, pin_memory=hparams.pin_memory)

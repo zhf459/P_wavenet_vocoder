@@ -60,6 +60,9 @@ import pickle
 import audio
 from hparams import hparams, hparams_debug_string
 from scipy.stats import logistic
+from wavenet_vocoder.stft import STFT
+from dataLoader import DataLoader
+
 
 fs = hparams.sample_rate
 gpu_count = 1  # torch.cuda.device_count()
@@ -116,26 +119,29 @@ def time_string():
     return datetime.now().strftime('%Y-%m-%d %H:%M')
 
 
-def get_power_loss(sample_, x_, n_fft=1024, before=True):
-    batch = sample_.shape[0]
-    ss = 0
-    if before:
-        for i in range(batch):
-            y = np.reshape(sample_[i], (sample_[i].shape[1]))
-            y1 = np.reshape(x_[i], (x_[i].shape[1]))
-            stft = librosa.stft(y, n_fft=n_fft)
-            stft1 = librosa.stft(y1, n_fft=n_fft)
-            s = np.mean(np.abs(stft) ** 2) - np.mean(np.abs(stft1) ** 2)
-            ss += np.mean(s ** 2)
-        return ss / batch
-    else:
-        for i in range(batch):
-            y = np.reshape(sample_[i], (sample_[i].shape[0]))
-            stft = librosa.stft(y, n_fft=n_fft)
-            stft1 = librosa.stft(x_[i][0], n_fft=n_fft)
-            s = np.abs(stft) ** 2 - np.abs(stft1) ** 2
-            ss += np.mean(s ** 2)
-        return ss / batch
+def get_power_loss_stft(sample_, x_, cuda=True):
+    batch = sample_.size(0)
+    stft = STFT()
+    s1 = sample_.view(batch, -1)
+    s2 = x_.view(batch, -1)
+    if cuda:
+        stft = stft.cuda()
+    s1 = stft(s1)
+    s2 = stft(s2)
+    s = torch.abs(s1) ** 2 - torch.abs(s2) ** 2
+    rs = torch.mean(s ** 2)
+    return rs / batch
+
+
+def get_power_loss_torch(y, y1, n_fft=512, hop_length=256, cuda=True):
+    batch = y.size(0)
+    x = y.view(batch, -1)
+    x1 = y1.view(batch, -1)
+    s = torch.stft(x, n_fft, hop_length)
+    s1 = torch.stft(x1, n_fft, hop_length)
+    ss = torch.log(torch.sqrt(s[:, :, :, 0] ** 2 + s[:, :, :, 1] ** 2)) - torch.log(torch.sqrt(s1[:, :, :, 0] ** 2 + s1[:, :, :, 1] ** 2))
+    return torch.sum(ss ** 2)
+
 
 
 def to_numpy(x):
@@ -202,25 +208,29 @@ def eval_model(global_step, writer, teacher, student, y, c, g, input_lengths, ev
         y_hat = y_teacher.view(-1).cpu().data.numpy()
     # y_student
     # z noise sample from logistic
-    # y_student = student()
-
+    z = np.random.logistic(0, 1, y_target.shape)
+    mu, scale = student(z, c, g=g)
+    m, s = to_numpy(mu), to_numpy(scale)
+    student_predict = np.random.logistic(m, s)
     # Save audio
     os.makedirs(eval_dir, exist_ok=True)
-    path = join(eval_dir, "step{:09d}_predicted.wav".format(global_step))
+    path = join(eval_dir, "step{:09d}_teacher_predicted.wav".format(global_step))
     librosa.output.write_wav(path, y_hat, sr=hparams.sample_rate)
+    path = join(eval_dir, "step{:09d}_student_predicted.wav".format(global_step))
+    librosa.output.write_wav(path, student_predict, sr=hparams.sample_rate)
     path = join(eval_dir, "step{:09d}_target.wav".format(global_step))
     librosa.output.write_wav(path, y_target, sr=hparams.sample_rate)
-
+    student.train()  # set student to train
     # save figure
     path = join(eval_dir, "step{:09d}_waveplots.png".format(global_step))
-    save_waveplot(path, y_hat, y_target)
+    save_waveplot(path, y_hat, y_target, student_predict)
 
 
 # save sample from
 def save_states(global_step, writer, y_hat, y, y_student, input_lengths, checkpoint_dir=None):
     print("Save intermediate states at step {}".format(global_step))
     idx = np.random.randint(0, len(y_hat))
-    length = input_lengths[idx].data.cpu().numpy()[0]
+    length = input_lengths[idx].data.cpu().numpy()
 
     # (B, C, T)
     if y_hat.dim() == 4:
@@ -260,7 +270,7 @@ def save_states(global_step, writer, y_hat, y, y_student, input_lengths, checkpo
     path = join(audio_dir, "step{:09d}_target.wav".format(global_step))
     librosa.output.write_wav(path, y, sr=hparams.sample_rate)
     path = join(audio_dir, "step{:09d}_student.wav".format(global_step))
-    y_student = y_student[idx].reshape(y_student.shape[1])
+    y_student = y_student[idx].reshape(y_student.shape[-1])
     librosa.output.write_wav(path, y_student, sr=hparams.sample_rate)
     path = join(audio_dir, "step{:09d}_wave.png".format(global_step))
     save_waveplot(path, y_student, y, y_hat)
@@ -301,7 +311,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     #         for param_group in optimizer.param_groups:
     #             param_group['lr'] = current_lr
     optimizer.zero_grad()
-
+    cross_entorpy = nn.CrossEntropyLoss()
     # Prepare data
     x, y = Variable(x), Variable(y, requires_grad=False)
     c = Variable(c) if c is not None else None
@@ -315,8 +325,8 @@ def __train_step(phase, epoch, global_step, global_test_step,
 
     # (B, T, 1)
     mask = sequence_mask(input_lengths, max_len=x.size(-1)).unsqueeze(-1)
-    mask = mask[:, :, :]
-    mask.expand_as(y)
+    mask = mask[:, 1:, :]
+    # mask.expand_as(y)
     # apply the student model with stacked iaf layers and return mu,scale
     z = Variable(torch.from_numpy(np.random.logistic(0, 1, size=x.size())).float()).cuda()
     mu, scale = student(z, c=c, g=g, softmax=False)
@@ -324,31 +334,33 @@ def __train_step(phase, epoch, global_step, global_test_step,
     mu, scale = to_numpy(mu), to_numpy(scale)
     kl_loss, h_s = 0, 0
     _h_pt_ps = 0
+    m =  m.clamp(-0.999,0.999)
     sample_T, kl_loss_sum = 5, Variable(torch.FloatTensor(1).float(), requires_grad=True).cuda()
     power_loss_sum = 0
     for i in range(sample_T):
         z = np.random.logistic(0, 1, x.shape)
         student_predict = m + s * to_variable(z)  # predicted wave
-        sp = student_predict
+        # sp = student_predict.clamp(-0.99, 0.99)
+        student_predict = student_predict.clamp(-0.99, 0.99)
         y_hat = teacher(student_predict, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
         # sample from teacher distribution
-        # teacher_predict = sample_from_discretized_mix_logistic(y_hat)
+        teacher_predict = sample_from_discretized_mix_logistic(y_hat)
         student_predict = student_predict.permute(0, 2, 1)
-        _, teacher_log_p = discretized_mix_logistic_loss(y_hat, student_predict, reduce=False)  # -log(Pt)
+        _, teacher_log_p = discretized_mix_logistic_loss(y_hat[:,:,:-1],  student_predict[:,1:,:], reduce=False)  # -log(Pt)
         # h_pt_ps = torch.sum(teacher_log_p * p_s * mask)  # / mask.sum()
         h_pt_ps = torch.sum(teacher_log_p * mask) / mask.sum()
-        power_loss_sum += get_power_loss(to_numpy(sp), to_numpy(x))
-        _h_pt_ps += torch.sum(teacher_log_p)  # / mask.sum()
+        # h_pt_ps = F.cross_entropy(student_predict,teacher_predict)
+        student_predict = student_predict.permute(0, 2, 1)
+        power_loss_sum += get_power_loss_torch(student_predict, x)
+        # _h_pt_ps += torch.sum(teacher_log_p)  # / mask.sum()
         a = s.permute(0, 2, 1)
         # h_ps = torch.sum(torch.log(p_s) * mask)  # / mask.sum()
         # cross_entorpy = F.cross_entropy(teacher_predict,student_predict)
-        h_ps = torch.mean(torch.log(a)) + 2
-        h_s += h_ps
-        kl_loss_sum += h_pt_ps - h_ps
-    kl_loss = kl_loss_sum / (hparams.batch_size)
-    power_loss = power_loss_sum / (hparams.batch_size)
-    power_loss = Variable(torch.FloatTensor(1).fill_(power_loss).float(), requires_grad=True).cuda()
-    loss = kl_loss + power_loss
+        h_ps = torch.sum((teacher_log_p-(torch.log(a[:,1:,:]) + 2)) * mask) / mask.sum()
+        kl_loss_sum += h_ps #+ h_pt_ps
+    kl_loss = kl_loss_sum / (hparams.batch_size*sample_T)
+    power_loss = power_loss_sum / (hparams.batch_size*sample_T)
+    loss = kl_loss # + power_loss
     rs = kl_loss.cpu().data.numpy()
     if rs == np.isinf(rs):
         print('inf detected')
@@ -447,8 +459,7 @@ def train_loop(student, teacher, data_loaders, optimizer, writer, checkpoint_dir
 
             # log per epoch
             averaged_loss = running_loss / len(data_loader)
-            writer.add_scalar("{} loss (per epoch)".format(phase),
-                              averaged_loss, global_epoch)
+            writer.add_scalar("{} loss (per epoch)".format(phase),float(averaged_loss.data[0]), global_epoch)
             print("[{}] Loss: {}".format(phase, running_loss / len(data_loader)))
 
         global_epoch += 1
@@ -582,7 +593,7 @@ def get_data_loaders(data_root, speaker_id, test_shuffle=True):
                 shuffle = test_shuffle
 
             dataset = PyTorchDataset(X, Mel)
-            data_loader = data_utils.DataLoader(
+            data_loader = DataLoader(
                 dataset, batch_size=hparams.batch_size,
                 num_workers=hparams.num_workers, sampler=sampler, shuffle=shuffle,
                 collate_fn=collate_fn, pin_memory=hparams.pin_memory)
@@ -658,8 +669,6 @@ if __name__ == "__main__":
     # Model
     student_model = build_model(name='student')
     teacher_model = build_model(name='teacher')
-
-    # print(teacher_model)
 
     if use_cuda:
         if gpu_count > 1:

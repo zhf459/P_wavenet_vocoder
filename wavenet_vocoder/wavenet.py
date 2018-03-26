@@ -307,6 +307,7 @@ class WaveNet(nn.Module):
             else:
                 if t > 0:
                     current_input = outputs[-1]
+                    current_input = Variable(torch.from_numpy(current_input).type(torch.cuda.FloatTensor))
 
             # Conditioning features for single time step
             ct = None if c is None else c[:, t, :].unsqueeze(1)
@@ -334,9 +335,11 @@ class WaveNet(nn.Module):
                     sample = np.random.choice(np.arange(self.out_channels), p=x.view(-1).data.cpu().numpy())
                     x.zero_()
                     x[:, sample] = 1.0
-            outputs += [x]
+            # outputs += [x]
+            outputs += [x.data.cpu().numpy()]
 
         # T x B x C
+        outputs = torch.from_numpy(np.asarray(outputs)).float()
         outputs = torch.stack(outputs)
         # B x C x T
         outputs = outputs.transpose(0, 1).transpose(1, 2).contiguous()

@@ -71,6 +71,8 @@ def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, 
 
     if use_cuda:
         model = model.cuda()
+        for param in model.parameters():
+            param.requires_grade =False
     model.eval()
     if fast:
         model.make_generation_fast_()
@@ -136,13 +138,13 @@ if __name__ == "__main__":
         '--length': '24000',
         '--hparams': "cin_channels=80,gin_channels=-1",
         '--initial-value': None,
-        '--conditional': '/home/zeng/work/pycharm/p_wavenet_vocoder/data/ljspeech/ljspeech-mel-02183.npy'
+        '--conditional': 'data/ljspeech/ljspeech-mel-01947.npy'
     }
     print("Command line args:\n", args)
     # checkpoint_path = args["<checkpoint>"]
-    checkpoint_path = '/home/zeng/work/pycharm/p_wavenet_vocoder/checkpoints_teacher/checkpoint_step000700000.pth'
+    checkpoint_path = '/home/jinqiangzeng/work/pycharm/P_wavenet_vocoder/checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth'
     # dst_dir = args["<dst_dir>"]
-    dst_dir = '/home/zeng/work/pycharm/p_wavenet_vocoder/generate'
+    dst_dir = 'generate'
     # length = int(args["--length"])
     length = 32000
     initial_value = args["--initial-value"]
@@ -171,7 +173,7 @@ if __name__ == "__main__":
     else:
         c = None
 
-    from train import build_model
+    from train_student import build_model
 
     # Model
     model = build_model()
@@ -184,9 +186,10 @@ if __name__ == "__main__":
 
     os.makedirs(dst_dir, exist_ok=True)
     dst_wav_path = join(dst_dir, "{}{}.wav".format(checkpoint_name, file_name_suffix))
-
+    for param in model.parameters():
+        param.requires_grade = False
     # DO generate
-    waveform = wavegen(model, length=None, c=c, g=speaker_id, initial_value=initial_value, fast=True)
+    waveform = wavegen(model, c=c, g=speaker_id, initial_value=initial_value, fast=True)
 
     # save
     librosa.output.write_wav(dst_wav_path, waveform, sr=hparams.sample_rate)

@@ -12,7 +12,7 @@ import pysptk
 
 from wavenet_vocoder.mixture import discretized_mix_logistic_loss
 from wavenet_vocoder.mixture import sample_from_discretized_mix_logistic
-
+from wavenet_vocoder.stft import STFT
 import tensorflow as tf
 
 
@@ -80,5 +80,14 @@ def test_misc():
     assert np.allclose(log_one_minus_cdf_min1.data.numpy(), log_one_minus_cdf_min2.data.numpy())
 
 
+def test_stft():
+    y, sr = librosa.load(librosa.util.example_audio_file())
+    y = np.asarray([y])
+    stft = STFT()
+    y1 = Variable(torch.from_numpy(y).float())
+    s = stft(y1)
+    print('')
+
+
 if __name__ == '__main__':
-    test_mixture()
+    test_stft()
