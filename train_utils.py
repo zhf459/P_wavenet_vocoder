@@ -530,9 +530,10 @@ def build_model(name='teacher'):
         return StudentWaveNet()
 
 
-def save_waveplot(path, y_hat, y_target,y_teacher=None):
+def save_waveplot(path, y_hat, y_target,y_teacher=None,student_mu=None):
     sr = hparams.sample_rate
     size = 3 if y_teacher is not None else 2
+    size = size+1 if student_mu is not None else size
     plt.figure(figsize=(16, 6))
     plt.subplot(size, 1, 1)
     librosa.display.waveplot(y_target, sr=sr)
@@ -541,6 +542,11 @@ def save_waveplot(path, y_hat, y_target,y_teacher=None):
     if size == 3:
         plt.subplot(size, 1, 3)
         librosa.display.waveplot(y_teacher, sr=sr)
+    elif size ==4:
+        plt.subplot(size, 1, 3)
+        librosa.display.waveplot(y_teacher, sr=sr)
+        plt.subplot(4, 1, 4)
+        librosa.display.waveplot(student_mu[0], sr=sr)
     plt.tight_layout()
     plt.savefig(path, format="png")
     plt.close()

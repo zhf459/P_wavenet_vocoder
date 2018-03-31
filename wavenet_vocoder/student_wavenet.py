@@ -55,8 +55,8 @@ class StudentWaveNet(nn.Module):
     """
 
     def __init__(self, out_channels=2,
-                 layers=30, stacks=3,
-                 iaf_layer_size=[10, 10, 10, 30],
+                 layers=48, stacks=8,
+                 iaf_layer_size=[6, 6, 6, 6, 24],
                  # iaf_layer_size=[10, 30],
                  residual_channels=64,
                  gate_channels=64,
@@ -191,9 +191,9 @@ class StudentWaveNet(nn.Module):
             ss = Variable(torch.rand(z.size()).fill_(1).cuda())
             for j in range(i + 1, len(s)):
                 ss = ss * s[j]
-            mu_tot = mu_tot + m[i] * ss
+            mu_tot = s[i] * mu_tot + m[i]
             scale_tot = scale_tot * s[i]
-        return mu_tot, scale_tot
+        return z, mu_tot, scale_tot
 
     def clear_buffer(self):
         self.first_conv.clear_buffer()
