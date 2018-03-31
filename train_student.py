@@ -131,14 +131,17 @@ def get_power_loss_stft(sample_, x_, cuda=True):
     return rs / batch
 
 # TODO smaller hop_length or add window
-def get_power_loss_torch(y, y1, n_fft=512, hop_length=256, cuda=True):
+def get_power_loss_torch(y, y1, n_fft=2048, hop_length=256,window_sizes=[1024,512,256,128], cuda=True):
     batch = y.size(0)
     x = y.view(batch, -1)
     x1 = y1.view(batch, -1)
-    s = torch.stft(x.data.cpu(), n_fft, hop_length)
-    s1 = torch.stft(x1.data.cpu(), n_fft, hop_length)
-    ss = torch.log(torch.clamp(torch.sum(s ** 2, 3),min=1e-5)) - torch.log(torch.clamp(torch.sum(s1 ** 2, 3),min=1e-5))
-    return torch.mean(torch.abs(ss))
+    loss = 0
+    for w_size in window_sizes:
+        s = torch.stft(x.data.cpu(), n_fft, hop_length,window=torch.hann_window(w_size, periodic=True))
+        s1 = torch.stft(x1.data.cpu(), n_fft, hop_length,window=torch.hann_window(w_size, periodic=True))
+        ss = torch.log(torch.clamp(torch.sum(s ** 2, 3),min=1e-5)) - torch.log(torch.clamp(torch.sum(s1 ** 2, 3),min=1e-5))
+        loss += torch.mean(torch.abs(ss))
+    return loss
 
 
 def to_numpy(x):
@@ -356,7 +359,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     kl_loss = cross_entropy - h_ps
     # power_loss = power_loss_sum / (hparams.batch_size * sample_T)
     power_loss = get_power_loss_torch(m,x)
-    loss =  cross_entropy-h_ps +power_loss
+    loss =  power_loss # +cross_entropy-h_ps
     rs = kl_loss.cpu().data.numpy()
     if rs == np.isinf(rs):
         print('inf detected')
