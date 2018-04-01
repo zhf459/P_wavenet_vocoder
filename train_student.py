@@ -117,6 +117,7 @@ def assert_ready_for_upsampling(x, c):
 def time_string():
     return datetime.now().strftime('%Y-%m-%d %H:%M')
 
+
 def get_power_loss_stft(sample_, x_, cuda=True):
     batch = sample_.size(0)
     stft = STFT()
@@ -130,18 +131,18 @@ def get_power_loss_stft(sample_, x_, cuda=True):
     rs = torch.mean(s ** 2)
     return rs / batch
 
+
 # TODO smaller hop_length or add window
-def get_power_loss_torch(y, y1, n_fft=2048, hop_length=256,window_sizes=[1024,512,256,128], cuda=True):
+def get_power_loss_torch(y, y1, n_fft=1024, hop_length=256, cuda=True):
     batch = y.size(0)
     x = y.view(batch, -1)
     x1 = y1.view(batch, -1)
     loss = 0
-    for w_size in window_sizes:
-        s = torch.stft(x.data.cpu(), n_fft, hop_length,window=torch.hann_window(w_size, periodic=True))
-        s1 = torch.stft(x1.data.cpu(), n_fft, hop_length,window=torch.hann_window(w_size, periodic=True))
-        ss = torch.log(torch.clamp(torch.sum(s ** 2, 3),min=1e-5)) - torch.log(torch.clamp(torch.sum(s1 ** 2, 3),min=1e-5))
-        loss += torch.mean(torch.abs(ss))
-    return loss
+    s = torch.stft(x, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
+    s1 = torch.stft(x1, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
+    ss = torch.log(torch.sqrt(torch.sum(s ** 2, -1) + 1)) - torch.log(torch.sqrt(torch.sum(s1 ** 2, -1) + 1))
+    loss += torch.mean(torch.abs(ss))
+    return torch.mean(torch.abs(ss))
 
 
 def to_numpy(x):
@@ -150,7 +151,7 @@ def to_numpy(x):
 
 def to_variable(x, reqiures_grad=False):
     if type(x) == np.ndarray:
-        return Variable(torch.from_numpy(x).float(),requires_grad=reqiures_grad).cuda()
+        return Variable(torch.from_numpy(x).float(), requires_grad=reqiures_grad).cuda()
     return x
 
 
@@ -228,6 +229,18 @@ def eval_model(global_step, writer, teacher, student, y, c, g, input_lengths, ev
 
 # save sample from
 def save_states(global_step, writer, y_hat, y, y_student, input_lengths, mu=None, checkpoint_dir=None):
+    '''
+
+    :param global_step:
+    :param writer:
+    :param y_hat: parameters output by teachery_hat是教师结果
+    :param y: target
+    :param y_student: student output
+    :param input_lengths:
+    :param mu: student mu
+    :param checkpoint_dir:
+    :return:
+    '''
     print("Save intermediate states at step {}".format(global_step))
     idx = np.random.randint(0, len(y_hat))
     length = input_lengths[idx].data.cpu().numpy()
@@ -279,7 +292,7 @@ def save_states(global_step, writer, y_hat, y, y_student, input_lengths, mu=None
     # TODO save every 200 step,
     if global_step % 200 == 0:
         path = join(audio_dir, "wave_step{:09d}.png".format(global_step))
-        save_waveplot(path, y_student, y, y_hat, mu)
+        save_waveplot(path, y_student=y_student, y_target=y, y_teacher=y_hat, student_mu=mu)
 
 
 def __train_step(phase, epoch, global_step, global_test_step,
@@ -310,7 +323,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
         lr_schedule_f = getattr(lrschedule, hparams.lr_schedule)
         current_lr = lr_schedule_f(
             hparams.initial_learning_rate, step, **hparams.lr_schedule_kwargs)
-        if gpu_count>1:
+        if gpu_count > 1:
             for param_group in optimizer.module.param_groups:
                 param_group['lr'] = current_lr
         else:
@@ -332,44 +345,47 @@ def __train_step(phase, epoch, global_step, global_test_step,
     mask = sequence_mask(input_lengths, max_len=x.size(-1)).unsqueeze(-1)
     mask = mask[:, 1:, :]
     # apply the student model with stacked iaf layers and return mu,scale
-    u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
-    z = torch.log(u) - torch.log(1 - u)
+    # u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
+    # z = torch.log(u) - torch.log(1 - u)
+    z = Variable(torch.from_numpy(np.random.logistic(0, 1, size=x.shape)).float().cuda(), requires_grad=False)
     predict, mu, scale = student(z, c=c, g=g, softmax=False)
     m, s = mu, scale
     # mu, scale = to_numpy(mu), to_numpy(scale)
-    #TODO sample times, change to 300 or 400
+    # TODO sample times, change to 300 or 400
     sample_T, kl_loss_sum = 100, 0
     power_loss_sum = 0
     y_hat = teacher(z, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
     h_pt_ps = 0
     # TODO add some constrain on scale ,we want it to be small?
     for i in range(sample_T):
-        u = Variable(torch.from_numpy(np.random.uniform(1e-5,1-1e-5,x.size())).float().cuda(),requires_grad=False)
-        z = torch.log(u) - torch.log(1-u)
+        u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
+        z = torch.log(u) - torch.log(1 - u)
         student_predict = m + s * z  # predicted wave
-        student_predict.clamp(-0.99,0.99)
+        student_predict.clamp(-0.99, 0.99)
         student_predict = student_predict.permute(0, 2, 1)
         _, teacher_log_p = discretized_mix_logistic_loss(y_hat[:, :, :-1], student_predict[:, 1:, :], reduce=False)
         h_pt_ps += torch.sum(teacher_log_p * mask) / mask.sum()
         student_predict = student_predict.permute(0, 2, 1)
-        # power_loss_sum += get_power_loss_torch(student_predict, x)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=2048)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=1024)
     a = s.permute(0, 2, 1)
     h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / mask.sum()
-    cross_entropy = h_pt_ps/( sample_T)
+    cross_entropy = h_pt_ps / (sample_T)
     kl_loss = cross_entropy - h_ps
-    # power_loss = power_loss_sum / (hparams.batch_size * sample_T)
-    power_loss = get_power_loss_torch(m,x)
-    loss =  power_loss # +cross_entropy-h_ps
+    power_loss = power_loss_sum / (3*sample_T)
+    # power_loss = get_power_loss_torch(z, x, window_sizes=[512])
+    loss = power_loss  # +cross_entropy-h_ps
     rs = kl_loss.cpu().data.numpy()
-    if rs == np.isinf(rs):
-        print('inf detected')
-    else:
-        print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss), np.mean(to_numpy(s)),
+    if  step > 0 and step % 50 == 0:
+        print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
+                                                                                   np.mean(to_numpy(s)),
                                                                                    np.mean(to_numpy(m)),
                                                                                    to_numpy(kl_loss),
                                                                                    to_numpy(loss)))
     if train and step > 0 and step % hparams.checkpoint_interval == 0:
-        save_states(step, writer, y_hat, y, predict, input_lengths, m, checkpoint_dir)
+        save_states(step, writer, y_hat=y_hat, y=y, y_student=predict, input_lengths=input_lengths, mu=m,
+                    checkpoint_dir=checkpoint_dir)
         if step % (5 * hparams.checkpoint_interval) == 0:
             save_checkpoint(student, optimizer, step, checkpoint_dir, epoch)
     if do_eval and False:
