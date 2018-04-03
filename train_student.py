@@ -140,7 +140,7 @@ def get_power_loss_torch(y, y1, n_fft=1024, hop_length=256, cuda=True):
     loss = 0
     s = torch.stft(x, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
     s1 = torch.stft(x1, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
-    ss = torch.log(torch.sqrt(torch.sum(s ** 2, -1) + 1)) - torch.log(torch.sqrt(torch.sum(s1 ** 2, -1) + 1))
+    ss = torch.log(torch.sqrt(torch.sum(s ** 2, -1) + 1e-5)) - torch.log(torch.sqrt(torch.sum(s1 ** 2, -1) + 1e-5))
     loss += torch.mean(torch.abs(ss))
     return torch.mean(torch.abs(ss))
 
@@ -352,7 +352,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     m, s = mu, scale
     # mu, scale = to_numpy(mu), to_numpy(scale)
     # TODO sample times, change to 300 or 400
-    sample_T, kl_loss_sum = 100, 0
+    sample_T, kl_loss_sum = 50, 0
     power_loss_sum = 0
     y_hat = teacher(z, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
     h_pt_ps = 0
@@ -367,17 +367,20 @@ def __train_step(phase, epoch, global_step, global_test_step,
         h_pt_ps += torch.sum(teacher_log_p * mask) / mask.sum()
         student_predict = student_predict.permute(0, 2, 1)
         power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=256)
         power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=2048)
         power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=1024)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=128)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=64)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=4096)
     a = s.permute(0, 2, 1)
     h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / mask.sum()
     cross_entropy = h_pt_ps / (sample_T)
     kl_loss = cross_entropy - h_ps
-    power_loss = power_loss_sum / (3*sample_T)
-    # power_loss = get_power_loss_torch(z, x, window_sizes=[512])
+    power_loss = power_loss_sum / (7*sample_T)
     loss = power_loss  # +cross_entropy-h_ps
     rs = kl_loss.cpu().data.numpy()
-    if  step > 0 and step % 50 == 0:
+    if  step > 0 and step % 20 == 0:
         print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
                                                                                    np.mean(to_numpy(s)),
                                                                                    np.mean(to_numpy(m)),
