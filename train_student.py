@@ -118,20 +118,6 @@ def time_string():
     return datetime.now().strftime('%Y-%m-%d %H:%M')
 
 
-def get_power_loss_stft(sample_, x_, cuda=True):
-    batch = sample_.size(0)
-    stft = STFT()
-    s1 = sample_.view(batch, -1)
-    s2 = x_.view(batch, -1)
-    if cuda:
-        stft = stft.cuda()
-    s1 = stft(s1)
-    s2 = stft(s2)
-    s = torch.abs(s1) ** 2 - torch.abs(s2) ** 2
-    rs = torch.mean(s ** 2)
-    return rs / batch
-
-
 # TODO smaller hop_length or add window
 def get_power_loss_torch(y, y1, n_fft=1024, hop_length=256, cuda=True):
     batch = y.size(0)
@@ -352,9 +338,9 @@ def __train_step(phase, epoch, global_step, global_test_step,
     m, s = mu, scale
     # mu, scale = to_numpy(mu), to_numpy(scale)
     # TODO sample times, change to 300 or 400
-    sample_T, kl_loss_sum = 50, 0
+    sample_T, kl_loss_sum = 16, 0
     power_loss_sum = 0
-    y_hat = teacher(z, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
+    y_hat = teacher(predict, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
     h_pt_ps = 0
     # TODO add some constrain on scale ,we want it to be small?
     for i in range(sample_T):
@@ -366,19 +352,19 @@ def __train_step(phase, epoch, global_step, global_test_step,
         _, teacher_log_p = discretized_mix_logistic_loss(y_hat[:, :, :-1], student_predict[:, 1:, :], reduce=False)
         h_pt_ps += torch.sum(teacher_log_p * mask) / mask.sum()
         student_predict = student_predict.permute(0, 2, 1)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128)
-        # power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=64)
-        # power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=4096)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512,hop_length=128)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256,hop_length=64)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048,hop_length=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024,hop_length=256)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128,hop_length=32)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=16)
+        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=1024)
     a = s.permute(0, 2, 1)
-    h_ps = torch.sum((torch.log(a[:, 1:, :]) ) * mask) / (hparams.batch_size*mask.sum()) + 2
-    cross_entropy = h_pt_ps / (sample_T)
+    h_ps = torch.sum((torch.log(a[:, 1:, :])+ 2 ) * mask) / (hparams.batch_size*mask.sum())
+    cross_entropy = h_pt_ps / (hparams.batch_size*sample_T)
     kl_loss = cross_entropy - h_ps
-    power_loss = power_loss_sum / (7 * sample_T)
-    loss = 5 * power_loss + cross_entropy - h_ps
+    power_loss = power_loss_sum / (5 * sample_T)
+    loss = cross_entropy - h_ps + power_loss
     rs = kl_loss.cpu().data.numpy()
     if step > 0 and step % 20 == 0:
         print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
@@ -414,7 +400,7 @@ def __train_step(phase, epoch, global_step, global_test_step,
     # Logs
     writer.add_scalar("{} loss".format(phase), float(loss.data[0]), step)
     writer.add_scalar("{} _hps".format(phase), float(h_ps.data[0]), step)
-    writer.add_scalar("{} h_pt_ps".format(phase), float(h_pt_ps.data[0]), step)
+    writer.add_scalar("{} h_pt_ps".format(phase), float(cross_entropy.data[0]), step)
     writer.add_scalar("{} kl_loss".format(phase), float(kl_loss.data[0]), step)
     writer.add_scalar("{} power_loss".format(phase), float(power_loss.data[0]), step)
     if train:
@@ -428,8 +414,12 @@ def __train_step(phase, epoch, global_step, global_test_step,
 
 def train_loop(student, teacher, data_loaders, optimizer, writer, checkpoint_dir=None):
     if use_cuda:
-        student = student.cuda()
-        teacher = teacher.cuda()
+        if gpu_count>2:
+            student = nn.DataParallel(student)
+            teacher = nn.DataParallel(teacher)
+        else:
+            student = student.cuda()
+            teacher = teacher.cuda()
 
     # set false
     if hparams.exponential_moving_average:
@@ -641,7 +631,8 @@ if __name__ == "__main__":
         "--checkpoint-dir": 'checkpoints_student',
         "--checkpoint_teacher": './checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth',
         # the pre-trained teacher model
-        "--checkpoint_student": './checkpoints_student/checkpoint_step000076000_pl_combine.pth',  # 是否加载
+        "--checkpoint_student": './checkpoints_student/checkpoint_step000013000.pth',  # 是否加载
+        #"--checkpoint_student": None,  # 是否加载
         "--checkpoint": None,
         "--restore-parts": None,
         "--data-root": './data/ljspeech',  # dataset
@@ -693,9 +684,9 @@ if __name__ == "__main__":
 
     if use_cuda:
         if gpu_count > 1:
-            student_model = torch.nn.DataParallel(student_model, device_ids=range(gpu_count)).module
-            teacher_model = torch.nn.DataParallel(teacher_model, device_ids=range(gpu_count)).module
-            receptive_field = teacher_model.receptive_field
+            student_model = torch.nn.DataParallel(student_model)
+            teacher_model = torch.nn.DataParallel(teacher_model)
+            receptive_field = teacher_model.module.receptive_field
         else:
             teacher_model = teacher_model.cuda()
             student_model = student_model.cuda()
@@ -711,7 +702,7 @@ if __name__ == "__main__":
     # when use multi-gpu
     # optimizer = optim.ASGD(student_model.parameters(), lr=2 * 0.0001)
     if gpu_count > 1:
-        optimizer = torch.nn.DataParallel(optimizer, device_ids=range(gpu_count))
+        optimizer = torch.nn.DataParallel(optimizer)
     # load teacher model first
     restore_parts(checkpoint_teacher_path, teacher_model)
     teacher_model.eval()  # the teacher use eval not to train the parameters
