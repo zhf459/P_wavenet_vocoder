@@ -71,7 +71,7 @@ global_epoch = 0
 use_cuda = torch.cuda.is_available()
 if use_cuda:
     cudnn.benchmark = False
-
+current_gpu = 1
 
 # https://discuss.pytorch.org/t/how-to-apply-exponential-moving-average-decay-for-variables/10856/4
 # https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
@@ -366,21 +366,21 @@ def __train_step(phase, epoch, global_step, global_test_step,
         _, teacher_log_p = discretized_mix_logistic_loss(y_hat[:, :, :-1], student_predict[:, 1:, :], reduce=False)
         h_pt_ps += torch.sum(teacher_log_p * mask) / mask.sum()
         student_predict = student_predict.permute(0, 2, 1)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=512)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=256)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=2048)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=1024)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=128)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=64)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=4096)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128)
+        # power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=64)
+        # power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=4096)
     a = s.permute(0, 2, 1)
-    h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / mask.sum()
+    h_ps = torch.sum((torch.log(a[:, 1:, :]) ) * mask) / (hparams.batch_size*mask.sum()) + 2
     cross_entropy = h_pt_ps / (sample_T)
     kl_loss = cross_entropy - h_ps
-    power_loss = power_loss_sum / (7*sample_T)
-    loss = power_loss  # +cross_entropy-h_ps
+    power_loss = power_loss_sum / (7 * sample_T)
+    loss = 5 * power_loss + cross_entropy - h_ps
     rs = kl_loss.cpu().data.numpy()
-    if  step > 0 and step % 20 == 0:
+    if step > 0 and step % 20 == 0:
         print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
                                                                                    np.mean(to_numpy(s)),
                                                                                    np.mean(to_numpy(m)),
@@ -641,14 +641,15 @@ if __name__ == "__main__":
         "--checkpoint-dir": 'checkpoints_student',
         "--checkpoint_teacher": './checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth',
         # the pre-trained teacher model
-        "--checkpoint_student": None,  # 是否加载
+        "--checkpoint_student": './checkpoints_student/checkpoint_step000076000_pl_combine.pth',  # 是否加载
         "--checkpoint": None,
         "--restore-parts": None,
         "--data-root": './data/ljspeech',  # dataset
         "--log-event-path": None,  # if continue training, reload the checkpoint
         "--speaker-id": None,
         "--reset-optimizer": None,
-        "--hparams": "cin_channels=80,gin_channels=-1"
+        "--hparams": "cin_channels=80,gin_channels=-1",
+        "--gpu": 0  # 指定gpu
 
     }
     print("Command line args:\n", args)
