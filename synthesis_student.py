@@ -47,7 +47,12 @@ def _to_numpy(x):
     return x.numpy()
 
 
-def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, tqdm=tqdm):
+def extract_mel_condition(wav_file_path, sample_rate=hparams.sample_rate):
+    wav, sr = librosa.load(wav_file_path, sample_rate)
+    pass
+
+
+def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, tqdm=tqdm,current_gpu=1):
     """Generate waveform samples by WaveNet.
 
     Args:
@@ -66,65 +71,19 @@ def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, 
     from train import sanity_check
     sanity_check(model, c, g)
 
-    c = _to_numpy(c)
-    g = _to_numpy(g)
-
+    # c = _to_numpy(c)
+    # g = _to_numpy(g)
+    # c
     if use_cuda:
-        model = model.cuda()
+        model = model.cuda(current_gpu)
     model.eval()
-    if fast:
-        model.make_generation_fast_()
+    T = c.size(-1)
+    u = Variable(torch.zeros(1,1,length).uniform_(1e-5, 1 - 1e-5), requires_grad=False).cuda(current_gpu)
+    z = torch.log(u) - torch.log(1 - u)
+    predict, mu, scale = model(z, c=c, g=g, softmax=False)
+    wave = predict.data.cpu().numpy()
+    return wave
 
-    if c is None:
-        assert length is not None
-    else:
-        # (Tc, D)
-        assert c.ndim == 2
-        Tc = c.shape[0]
-        upsample_factor = audio.get_hop_size()
-        # Overwrite length according to feature size
-        length = Tc * upsample_factor
-        # (Tc, D) -> (Tc', D)
-        # Repeat features before feeding it to the network
-        if not hparams.upsample_conditional_features:
-            c = np.repeat(c, upsample_factor, axis=0)
-
-        # B x C x T
-        c = Variable(torch.FloatTensor(c.T).unsqueeze(0))
-
-    if initial_value is None:
-        if is_mulaw_quantize(hparams.input_type):
-            initial_value = P.mulaw_quantize(0, hparams.quantize_channels)
-        else:
-            initial_value = 0.0
-
-    if is_mulaw_quantize(hparams.input_type):
-        assert initial_value >= 0 and initial_value < hparams.quantize_channels
-        initial_input = np_utils.to_categorical(
-            initial_value, num_classes=hparams.quantize_channels).astype(np.float32)
-        initial_input = Variable(torch.from_numpy(initial_input)).view(
-            1, 1, hparams.quantize_channels)
-    else:
-        initial_input = Variable(torch.zeros(1, 1, 1)).fill_(initial_value)
-
-    g = None if g is None else Variable(torch.LongTensor([g]))
-    if use_cuda:
-        initial_input = initial_input.cuda()
-        g = None if g is None else g.cuda()
-        c = None if c is None else c.cuda()
-
-    y_hat = model.incremental_forward(initial_input, c=c, g=g, T=length, tqdm=tqdm, softmax=True, quantize=True,
-                                      log_scale_min=hparams.log_scale_min)
-
-    if is_mulaw_quantize(hparams.input_type):
-        y_hat = y_hat.max(1)[1].view(-1).long().cpu().data.numpy()
-        y_hat = P.inv_mulaw_quantize(y_hat, hparams.quantize_channels)
-    elif is_mulaw(hparams.input_type):
-        y_hat = P.inv_mulaw(y_hat.view(-1).cpu().data.numpy(), hparams.quantize_channels)
-    else:
-        y_hat = y_hat.view(-1).cpu().data.numpy()
-
-    return y_hat
 
 
 if __name__ == "__main__":
@@ -136,13 +95,14 @@ if __name__ == "__main__":
         '--length': '24000',
         '--hparams': "cin_channels=80,gin_channels=-1",
         '--initial-value': None,
-        '--conditional': './data/ljspeech/ljspeech-mel-02183.npy'
+        '--conditional': './data/ljspeech/ljspeech-mel-02183.npy',
+        '--gpu_index': 1
     }
     print("Command line args:\n", args)
     # checkpoint_path = args["<checkpoint>"]
-    checkpoint_path = '/home/zeng/work/pycharm/p_wavenet_vocoder/checkpoints_teacher/checkpoint_step000700000.pth'
+    checkpoint_path = './checkpoints_student/checkpoint_step000593000.pth'
     # dst_dir = args["<dst_dir>"]
-    dst_dir = '/home/zeng/work/pycharm/p_wavenet_vocoder/generate'
+    dst_dir = './generate'
     # length = int(args["--length"])
     length = 32000
     initial_value = args["--initial-value"]
@@ -152,11 +112,11 @@ if __name__ == "__main__":
     output_html = args["--output-html"]
     speaker_id = args["--speaker-id"]
     speaker_id = None if speaker_id is None else int(speaker_id)
-
+    current_gpu = args['--gpu_index'] if not args['--gpu_index'] else 1
     # Override hyper parameters
     hparams.parse(args["--hparams"])
     assert hparams.name == "wavenet_vocoder"
-
+    os.makedirs(dst_dir, exist_ok=True)
     # Presets
     if hparams.preset is not None and hparams.preset != "":
         preset = hparams.presets[hparams.preset]
@@ -168,28 +128,37 @@ if __name__ == "__main__":
     # Load conditional features
     if conditional_path is not None:
         c = np.load(conditional_path)
+        wave_path = conditional_path.replace('mel','audio')
+        wav_target = np.load(wave_path)
+        length = wav_target.shape[0]
+        # x,c = audio.adjast_time_resolution(wav_target,c)
+        T,C = c.shape
+        c = torch.from_numpy(c.transpose().reshape(1,C,T))
+        c = Variable(c,requires_grad=False).cuda(current_gpu) if use_cuda else Variable(c,requires_grad=False)
     else:
         c = None
+        raise Exception("condition can't be null")
 
-    from train import build_model
+    from train_student import build_model
 
     # Model
-    model = build_model()
+    model = build_model('student')
+    model.gpu = current_gpu
 
     # Load checkpoint
     print("Load checkpoint from {}".format(checkpoint_path))
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint["state_dict"])
     checkpoint_name = splitext(basename(checkpoint_path))[0]
-
-    os.makedirs(dst_dir, exist_ok=True)
-    dst_wav_path = join(dst_dir, "{}{}.wav".format(checkpoint_name, file_name_suffix))
+    dst_wav_path = join(dst_dir, "{}{}_gen.wav".format(checkpoint_name, file_name_suffix))
+    dst_tgt_path = join(dst_dir, "{}{}_tgt.wav".format(checkpoint_name, file_name_suffix))
 
     # DO generate
-    waveform = wavegen(model, length=None, c=c, g=speaker_id, initial_value=initial_value, fast=True)
-
+    waveform = wavegen(model, length=length, c=c, g=speaker_id, initial_value=initial_value, fast=True)
+    waveform = waveform.reshape(-1)
     # save
     librosa.output.write_wav(dst_wav_path, waveform, sr=hparams.sample_rate)
+    librosa.output.write_wav(dst_tgt_path, wav_target, sr=hparams.sample_rate)
 
     print("Finished! Check out {} for generated audio samples.".format(dst_dir))
     sys.exit(0)

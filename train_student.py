@@ -73,6 +73,7 @@ if use_cuda:
     cudnn.benchmark = False
 current_gpu = 1
 
+
 # https://discuss.pytorch.org/t/how-to-apply-exponential-moving-average-decay-for-variables/10856/4
 # https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
 class ExponentialMovingAverage(object):
@@ -123,12 +124,10 @@ def get_power_loss_torch(y, y1, n_fft=1024, hop_length=256, cuda=True):
     batch = y.size(0)
     x = y.view(batch, -1)
     x1 = y1.view(batch, -1)
-    loss = 0
     s = torch.stft(x, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
     s1 = torch.stft(x1, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
     ss = torch.log(torch.sqrt(torch.sum(s ** 2, -1) + 1e-5)) - torch.log(torch.sqrt(torch.sum(s1 ** 2, -1) + 1e-5))
-    loss += torch.mean(torch.abs(ss))
-    return torch.mean(torch.abs(ss))
+    return torch.sum(ss**2)/batch
 
 
 def to_numpy(x):
@@ -333,7 +332,8 @@ def __train_step(phase, epoch, global_step, global_test_step,
     # apply the student model with stacked iaf layers and return mu,scale
     # u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
     # z = torch.log(u) - torch.log(1 - u)
-    z = Variable(torch.from_numpy(np.random.logistic(0, 1, size=x.shape)).float().cuda(), requires_grad=False)
+    u = Variable(torch.zeros(*x.size()).uniform_(1e-5, 1 - 1e-5), requires_grad=False).cuda()
+    z = torch.log(u) - torch.log(1 - u)
     predict, mu, scale = student(z, c=c, g=g, softmax=False)
     m, s = mu, scale
     # mu, scale = to_numpy(mu), to_numpy(scale)
@@ -344,28 +344,30 @@ def __train_step(phase, epoch, global_step, global_test_step,
     h_pt_ps = 0
     # TODO add some constrain on scale ,we want it to be small?
     for i in range(sample_T):
-        u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
+        # https://en.wikipedia.org/wiki/Logistic_distribution
+        u = Variable(torch.zeros(*x.size()).uniform_(1e-5,1-1e-5),requires_grad=False).cuda()
         z = torch.log(u) - torch.log(1 - u)
         student_predict = m + s * z  # predicted wave
-        student_predict.clamp(-0.99, 0.99)
+        # student_predict.clamp(-0.99, 0.99)
         student_predict = student_predict.permute(0, 2, 1)
         _, teacher_log_p = discretized_mix_logistic_loss(y_hat[:, :, :-1], student_predict[:, 1:, :], reduce=False)
         h_pt_ps += torch.sum(teacher_log_p * mask) / mask.sum()
         student_predict = student_predict.permute(0, 2, 1)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512,hop_length=128)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256,hop_length=64)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048,hop_length=512)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024,hop_length=256)
-        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128,hop_length=32)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=16)
-        power_loss_sum += get_power_loss_torch(student_predict, x,n_fft=1024)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512, hop_length=128)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256, hop_length=64)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048, hop_length=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024, hop_length=256)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128, hop_length=32)
     a = s.permute(0, 2, 1)
-    h_ps = torch.sum((torch.log(a[:, 1:, :])+ 2 ) * mask) / (hparams.batch_size*mask.sum())
-    cross_entropy = h_pt_ps / (hparams.batch_size*sample_T)
-    kl_loss = cross_entropy - h_ps
+    h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / ( mask.sum())
+    cross_entropy = h_pt_ps /(sample_T)
+    kl_loss = cross_entropy - 2*h_ps
+    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=64)
+    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=128)
+    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=256)
+    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=512)
     power_loss = power_loss_sum / (5 * sample_T)
-    loss = cross_entropy - h_ps + power_loss
-    rs = kl_loss.cpu().data.numpy()
+    loss = kl_loss  + power_loss
     if step > 0 and step % 20 == 0:
         print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
                                                                                    np.mean(to_numpy(s)),
@@ -414,12 +416,8 @@ def __train_step(phase, epoch, global_step, global_test_step,
 
 def train_loop(student, teacher, data_loaders, optimizer, writer, checkpoint_dir=None):
     if use_cuda:
-        if gpu_count>2:
-            student = nn.DataParallel(student)
-            teacher = nn.DataParallel(teacher)
-        else:
-            student = student.cuda()
-            teacher = teacher.cuda()
+        student = student.cuda()
+        teacher = teacher.cuda()
 
     # set false
     if hparams.exponential_moving_average:
@@ -631,7 +629,7 @@ if __name__ == "__main__":
         "--checkpoint-dir": 'checkpoints_student',
         "--checkpoint_teacher": './checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth',
         # the pre-trained teacher model
-        "--checkpoint_student": './checkpoints_student/checkpoint_step000013000.pth',  # 是否加载
+        "--checkpoint_student": '/home/jinqiangzeng/work/pycharm/P_wavenet_vocoder/checkpoints_student/checkpoint_step000056000.pth',  # 是否加载
         #"--checkpoint_student": None,  # 是否加载
         "--checkpoint": None,
         "--restore-parts": None,
@@ -684,8 +682,8 @@ if __name__ == "__main__":
 
     if use_cuda:
         if gpu_count > 1:
-            student_model = torch.nn.DataParallel(student_model)
-            teacher_model = torch.nn.DataParallel(teacher_model)
+            student_model = torch.nn.DataParallel(student_model).cuda()
+            teacher_model = torch.nn.DataParallel(teacher_model).cuda()
             receptive_field = teacher_model.module.receptive_field
         else:
             teacher_model = teacher_model.cuda()
@@ -702,7 +700,7 @@ if __name__ == "__main__":
     # when use multi-gpu
     # optimizer = optim.ASGD(student_model.parameters(), lr=2 * 0.0001)
     if gpu_count > 1:
-        optimizer = torch.nn.DataParallel(optimizer)
+        optimizer = torch.nn.DataParallel(optimizer).cuda()
     # load teacher model first
     restore_parts(checkpoint_teacher_path, teacher_model)
     teacher_model.eval()  # the teacher use eval not to train the parameters
