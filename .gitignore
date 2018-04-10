@@ -7,9 +7,9 @@ log
 generated
 data
 text
-
+generate
 # Created by https://www.gitignore.io
-
+*.zip
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/

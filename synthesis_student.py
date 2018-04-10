@@ -49,7 +49,8 @@ def _to_numpy(x):
 
 def extract_mel_condition(wav_file_path, sample_rate=hparams.sample_rate):
     wav, sr = librosa.load(wav_file_path, sample_rate)
-    pass
+    c = audio.melspectrogram(wav)
+    return wav,c
 
 
 def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, tqdm=tqdm,current_gpu=1):
@@ -71,9 +72,6 @@ def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, 
     from train import sanity_check
     sanity_check(model, c, g)
 
-    # c = _to_numpy(c)
-    # g = _to_numpy(g)
-    # c
     if use_cuda:
         model = model.cuda(current_gpu)
     model.eval()
@@ -83,6 +81,7 @@ def wavegen(model, length=None, c=None, g=None, initial_value=None, fast=False, 
     predict, mu, scale = model(z, c=c, g=g, softmax=False)
     wave = predict.data.cpu().numpy()
     return wave
+
 
 
 
@@ -140,6 +139,7 @@ if __name__ == "__main__":
         raise Exception("condition can't be null")
 
     from train_student import build_model
+    import matplotlib.pyplot as plt
 
     # Model
     model = build_model('student')
@@ -150,15 +150,25 @@ if __name__ == "__main__":
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint["state_dict"])
     checkpoint_name = splitext(basename(checkpoint_path))[0]
-    dst_wav_path = join(dst_dir, "{}{}_gen.wav".format(checkpoint_name, file_name_suffix))
+    dst_gen_path = join(dst_dir, "{}{}_gen.wav".format(checkpoint_name, file_name_suffix))
     dst_tgt_path = join(dst_dir, "{}{}_tgt.wav".format(checkpoint_name, file_name_suffix))
+    dst_img_path = join(dst_dir, "{}{}.png".format(checkpoint_name, file_name_suffix))
 
     # DO generate
     waveform = wavegen(model, length=length, c=c, g=speaker_id, initial_value=initial_value, fast=True)
-    waveform = waveform.reshape(-1)
+    wave_gen = waveform.reshape(-1)
     # save
-    librosa.output.write_wav(dst_wav_path, waveform, sr=hparams.sample_rate)
+    librosa.output.write_wav(dst_gen_path, wave_gen, sr=hparams.sample_rate)
     librosa.output.write_wav(dst_tgt_path, wav_target, sr=hparams.sample_rate)
-
+    plt.figure(figsize=(16, 6))
+    plt.subplot(2, 1, 1)
+    plt.title('generate')
+    librosa.display.waveplot(wave_gen, sr=hparams.sample_rate)
+    plt.subplot(2, 1, 2)
+    plt.title('target')
+    librosa.display.waveplot(wav_target, sr=hparams.sample_rate)
+    plt.tight_layout()
+    plt.savefig(dst_img_path, format="png")
+    plt.close()
     print("Finished! Check out {} for generated audio samples.".format(dst_dir))
     sys.exit(0)
