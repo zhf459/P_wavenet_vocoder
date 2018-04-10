@@ -55,8 +55,8 @@ class StudentWaveNet(nn.Module):
     """
 
     def __init__(self, out_channels=2,
-                 layers=30, stacks=3,
-                 iaf_layer_size=[10, 10, 10, 30],
+                 layers=48, stacks=8,
+                 iaf_layer_size=[6, 6, 6, 6, 24],
                  # iaf_layer_size=[10, 30],
                  residual_channels=64,
                  gate_channels=64,
@@ -68,13 +68,13 @@ class StudentWaveNet(nn.Module):
                  upsample_scales=None,
                  freq_axis_kernel_size=3,
                  scalar_input=True,
-                 is_student=True,
+                 gpu=0,
                  ):
         super(StudentWaveNet, self).__init__()
         self.scalar_input = scalar_input
         self.out_channels = out_channels
         self.cin_channels = cin_channels
-        self.is_student = is_student
+        self.gpu = gpu
         self.last_layers = []
         # 噪声
         assert layers % stacks == 0
@@ -144,7 +144,7 @@ class StudentWaveNet(nn.Module):
         """Forward step
 
         Args:
-            x (Variable): One-hot encoded audio signal, shape (B x C x T)
+            z (Variable): One-hot encoded audio signal, shape (B x C x T)
             c (Variable): Local conditioning features, shape (B x C' x T)
             g (Variable): Global conditioning features, shape (B x C'')
             softmax (bool): Whether applies softmax or not.
@@ -172,8 +172,8 @@ class StudentWaveNet(nn.Module):
             assert c.size(-1) == z.size(-1)
 
         # Feed data to network
-        mu_tot = Variable(torch.rand(z.size()).fill_(0)).cuda()
-        scale_tot = Variable(torch.rand(z.size()).fill_(1).cuda())
+        mu_tot = Variable(torch.rand(z.size()).fill_(0)).cuda(self.gpu)
+        scale_tot = Variable(torch.rand(z.size()).fill_(1).cuda(self.gpu))
         s = []
         m = []
         index = 0
@@ -184,16 +184,18 @@ class StudentWaveNet(nn.Module):
             for f in last_layer:
                 new_z = f(new_z)
             mu_f, scale_f = new_z[:, :1, :], torch.exp(new_z[:, 1:, :])
-            s.append(scale_f)
-            m.append(mu_f)
+            scale_tot = scale_tot * scale_f
+            mu_tot = scale_f*mu_tot + mu_f
+            # s.append(scale_f)
+            # m.append(mu_f)
             z = z * scale_f + mu_f
-        for i in range(len(s)):  # update mu_tot and scale_tot base on the paper
-            ss = Variable(torch.rand(z.size()).fill_(1).cuda())
-            for j in range(i + 1, len(s)):
-                ss = ss * s[j]
-            mu_tot = mu_tot + m[i] * ss
-            scale_tot = scale_tot * s[i]
-        return mu_tot, scale_tot
+        # for i in range(len(s)):  # update mu_tot and scale_tot base on the paper
+        #     ss = Variable(torch.rand(z.size()).fill_(1).cuda())
+        #     for j in range(i + 1, len(s)):
+        #         ss = ss * s[j]
+        #     mu_tot = s[i] * mu_tot + m[i]
+        #     scale_tot = scale_tot * s[i]
+        return z, mu_tot, scale_tot
 
     def clear_buffer(self):
         self.first_conv.clear_buffer()

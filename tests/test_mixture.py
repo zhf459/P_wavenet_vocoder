@@ -13,7 +13,7 @@ import pysptk
 from wavenet_vocoder.mixture import discretized_mix_logistic_loss
 from wavenet_vocoder.mixture import sample_from_discretized_mix_logistic
 from wavenet_vocoder.stft import STFT
-import tensorflow as tf
+import audio
 
 
 def log_prob_from_logits(x):
@@ -81,12 +81,10 @@ def test_misc():
 
 
 def test_stft():
-    y, sr = librosa.load(librosa.util.example_audio_file())
-    y = np.asarray([y])
-    stft = STFT()
-    y1 = Variable(torch.from_numpy(y).float())
-    s = stft(y1)
-    print('')
+    y, sr = librosa.load('LJ001-0018.wav')
+    print(y.shape)
+    mel = audio.melspectrogram(y)
+    print('--')
 
 
 if __name__ == '__main__':
