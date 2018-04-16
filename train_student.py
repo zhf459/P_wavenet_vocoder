@@ -127,7 +127,7 @@ def get_power_loss_torch(y, y1, n_fft=1024, hop_length=256, cuda=True):
     s = torch.stft(x, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
     s1 = torch.stft(x1, n_fft, hop_length, window=torch.hann_window(n_fft, periodic=True).cuda())
     ss = torch.log(torch.sqrt(torch.sum(s ** 2, -1) + 1e-5)) - torch.log(torch.sqrt(torch.sum(s1 ** 2, -1) + 1e-5))
-    return torch.sum(ss**2)/batch
+    return torch.sum(ss ** 2) / batch
 
 
 def to_numpy(x):
@@ -330,22 +330,22 @@ def __train_step(phase, epoch, global_step, global_test_step,
     mask = sequence_mask(input_lengths, max_len=x.size(-1)).unsqueeze(-1)
     mask = mask[:, 1:, :]
     # apply the student model with stacked iaf layers and return mu,scale
-    # u = Variable(torch.from_numpy(np.random.uniform(1e-5, 1 - 1e-5, x.size())).float().cuda(), requires_grad=False)
-    # z = torch.log(u) - torch.log(1 - u)
     u = Variable(torch.zeros(*x.size()).uniform_(1e-5, 1 - 1e-5), requires_grad=False).cuda()
     z = torch.log(u) - torch.log(1 - u)
     predict, mu, scale = student(z, c=c, g=g, softmax=False)
     m, s = mu, scale
     # mu, scale = to_numpy(mu), to_numpy(scale)
     # TODO sample times, change to 300 or 400
-    sample_T, kl_loss_sum = 16, 0
+    sample_T, kl_loss_sum = 8, 0
     power_loss_sum = 0
-    y_hat = teacher(predict, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
+    predict_ = predict.detach()
+    y_hat = teacher(predict_, c=c, g=g)  # y_hat: (B x C x T) teacher: 10-mixture-logistic
+    y_hat = y_hat.detach()
     h_pt_ps = 0
     # TODO add some constrain on scale ,we want it to be small?
     for i in range(sample_T):
         # https://en.wikipedia.org/wiki/Logistic_distribution
-        u = Variable(torch.zeros(*x.size()).uniform_(1e-5,1-1e-5),requires_grad=False).cuda()
+        u = Variable(torch.zeros(*x.size()).uniform_(1e-5, 1 - 1e-5), requires_grad=False).cuda()
         z = torch.log(u) - torch.log(1 - u)
         student_predict = m + s * z  # predicted wave
         # student_predict.clamp(-0.99, 0.99)
@@ -356,18 +356,16 @@ def __train_step(phase, epoch, global_step, global_test_step,
         power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=512, hop_length=128)
         power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=256, hop_length=64)
         power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=2048, hop_length=512)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=4096, hop_length=1024)
         power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=1024, hop_length=256)
         power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=128, hop_length=32)
+        power_loss_sum += get_power_loss_torch(student_predict, x, n_fft=64, hop_length=16)
     a = s.permute(0, 2, 1)
-    h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / ( mask.sum())
-    cross_entropy = h_pt_ps /(sample_T)
-    kl_loss = cross_entropy - 2*h_ps
-    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=64)
-    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=128)
-    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=256)
-    # power_loss_sum += get_power_loss_torch(predict, x, n_fft=1024, hop_length=512)
-    power_loss = power_loss_sum / (5 * sample_T)
-    loss = kl_loss  + power_loss
+    h_ps = torch.sum((torch.log(a[:, 1:, :]) + 2) * mask) / (mask.sum())
+    cross_entropy = h_pt_ps / (sample_T)
+    kl_loss = cross_entropy - h_ps
+    power_loss = power_loss_sum / (7 * sample_T)
+    loss =  kl_loss + power_loss
     if step > 0 and step % 20 == 0:
         print('power_loss={}, mean_scale={}, mean_mu={},kl_loss={}，loss={}'.format(to_numpy(power_loss),
                                                                                    np.mean(to_numpy(s)),
@@ -501,7 +499,7 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, ema=None):
         print("Saved averaged checkpoint:", checkpoint_path)
 
 
-def build_model(name='teacher'):
+def build_model(name='teacher', use_group_norm=False):
     if is_mulaw_quantize(hparams.input_type):
         if hparams.out_channels != hparams.quantize_channels:
             raise RuntimeError(
@@ -536,6 +534,7 @@ def build_model(name='teacher'):
             gin_channels=hparams.gin_channels,
             upsample_conditional_features=hparams.upsample_conditional_features,
             upsample_scales=hparams.upsample_scales,
+            use_group_norm=use_group_norm
         )
 
 
@@ -629,8 +628,8 @@ if __name__ == "__main__":
         "--checkpoint-dir": 'checkpoints_student',
         "--checkpoint_teacher": './checkpoints_teacher/20180127_mixture_lj_checkpoint_step000410000_ema.pth',
         # the pre-trained teacher model
-        "--checkpoint_student": '/home/jinqiangzeng/work/pycharm/P_wavenet_vocoder/checkpoints_student/checkpoint_step000056000.pth',  # 是否加载
-        #"--checkpoint_student": None,  # 是否加载
+        "--checkpoint_student": './checkpoints_student/checkpoint_step000009000.pth',  # 是否加载
+        # "--checkpoint_student": None,  # 是否加载
         "--checkpoint": None,
         "--restore-parts": None,
         "--data-root": './data/ljspeech',  # dataset
@@ -638,8 +637,8 @@ if __name__ == "__main__":
         "--speaker-id": None,
         "--reset-optimizer": None,
         "--hparams": "cin_channels=80,gin_channels=-1",
-        "--gpu": 0  # 指定gpu
-
+        "--gpu": 0,  # 指定gpu
+        "--use_group_norm": True
     }
     print("Command line args:\n", args)
     checkpoint_dir = args["--checkpoint-dir"]
@@ -649,7 +648,7 @@ if __name__ == "__main__":
     checkpoint_restore_parts = args["--restore-parts"]
     speaker_id = args["--speaker-id"]
     speaker_id = int(speaker_id) if speaker_id is not None else None
-
+    use_group_norm = args['--use_group_norm']
     data_root = args["--data-root"]
     if data_root is None:
         data_root = join(dirname(__file__), "data", "ljspeech")
@@ -677,7 +676,10 @@ if __name__ == "__main__":
     data_loaders = get_data_loaders(data_root, speaker_id, test_shuffle=True)
 
     # Model
-    student_model = build_model(name='student')
+    if use_group_norm:
+        student_model = build_model(name='student', use_group_norm=True)
+    else:
+        student_model = build_model(name='student')
     teacher_model = build_model(name='teacher')
 
     if use_cuda:

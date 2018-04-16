@@ -44,7 +44,7 @@ if __name__ == "__main__":
         in_dir = '/home/jinqiangzeng/work/data/speech/cmu_arctic'
         out_dir = './data/cmu_arctic'
     elif name == 'ljspeech':
-        in_dir = '/home/jinqiangzeng/work/data/speech/ljspeech/LJSpeech-1.0'
+        in_dir = '/home/tesla/work/data/LJSpeech-1.0'
         out_dir = './data/ljspeech'
     num_workers = None  # args["--num_workers"]
     num_workers = cpu_count() - 1 if num_workers is None else int(num_workers)

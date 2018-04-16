@@ -69,6 +69,8 @@ class StudentWaveNet(nn.Module):
                  freq_axis_kernel_size=3,
                  scalar_input=True,
                  gpu=0,
+                 use_group_norm = False,
+                 group_size=2
                  ):
         super(StudentWaveNet, self).__init__()
         self.scalar_input = scalar_input
@@ -76,14 +78,32 @@ class StudentWaveNet(nn.Module):
         self.cin_channels = cin_channels
         self.gpu = gpu
         self.last_layers = []
+        self.use_group_norm = use_group_norm
+        self.group_size = group_size
         # 噪声
         assert layers % stacks == 0
         layers_per_stack = layers // stacks
         if scalar_input:
             self.first_conv = nn.ModuleList([Conv1d1x1(1, residual_channels) for _ in range(len(iaf_layer_size))])
+            if use_group_norm:
+                first_layer = nn.ModuleList()
+                for _ in range(len(iaf_layer_size)):
+                    first_layer.append(nn.ModuleList([
+                        Conv1d1x1(1, residual_channels),
+                        nn.GroupNorm(self.group_size,residual_channels)
+                    ]))
+                self.first_conv = first_layer
         else:
             self.first_conv = nn.ModuleList(
                 [Conv1d1x1(out_channels, residual_channels) for _ in range(len(iaf_layer_size))])
+            if use_group_norm:
+                first_layer = nn.ModuleList()
+                for _ in range(len(iaf_layer_size)):
+                    first_layer.append(nn.ModuleList([
+                        Conv1d1x1(out_channels, residual_channels),
+                        nn.GroupNorm(self.group_size,residual_channels)
+                    ]))
+                self.first_conv = first_layer
         self.iaf_layers = nn.ModuleList()  # iaf层
         self.last_layers = nn.ModuleList()
 
@@ -102,12 +122,15 @@ class StudentWaveNet(nn.Module):
                     gin_channels=gin_channels,
                     weight_normalization=weight_normalization)
                 iaf_layer.append(conv)
+                if self.use_group_norm:
+                    iaf_layer.append(nn.GroupNorm(self.group_size,residual_channels))
             self.iaf_layers.append(iaf_layer)
             self.last_layers.append(nn.ModuleList([  # iaf的最后一层
                 nn.ReLU(inplace=True),
+                Conv1d1x1(residual_channels, residual_channels, weight_normalization=weight_normalization),
+                nn.GroupNorm(self.group_size,residual_channels),
+                nn.ReLU(inplace=True),
                 Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
-                # nn.ReLU(inplace=True),
-                # Conv1d1x1(residual_channels, out_channels, weight_normalization=weight_normalization),
             ]))
 
         if gin_channels > 0:
@@ -178,9 +201,17 @@ class StudentWaveNet(nn.Module):
         m = []
         index = 0
         for first_con, iaf, last_layer in zip(self.first_conv, self.iaf_layers, self.last_layers):  # iaf layer forward
-            new_z = first_con(z)
+            new_z = z
+            for f in first_con:
+                new_z = f(new_z)
             for f in iaf:
-                new_z, h = f(new_z, c, g_bct)
+                if self.use_group_norm:
+                    if 'GroupNorm' in str(f):
+                        new_z = f(new_z)
+                    else:
+                        new_z, h = f(new_z, c, g_bct)
+                else:
+                    new_z, h = f(new_z, c, g_bct)
             for f in last_layer:
                 new_z = f(new_z)
             mu_f, scale_f = new_z[:, :1, :], torch.exp(new_z[:, 1:, :])

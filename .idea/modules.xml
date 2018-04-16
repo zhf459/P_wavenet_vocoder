@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/P_wavenet_vocoder.iml" filepath="$PROJECT_DIR$/.idea/P_wavenet_vocoder.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../my-pycharm/wavenet_vocoder/.idea/wavenet_vocoder.iml" filepath="$PROJECT_DIR$/../my-pycharm/wavenet_vocoder/.idea/wavenet_vocoder.iml" />
     </modules>
   </component>
 </project>
