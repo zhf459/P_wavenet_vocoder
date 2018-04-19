@@ -46,21 +46,21 @@ from hparams import hparams, hparams_debug_string
 use_cuda = torch.cuda.is_available()
 if use_cuda:
     cudnn.benchmark = False
-gpu_count = torch.cuda.device_count()
+gpu_count = 1
 
 def sanity_check(model, c, g):
-    # if gpu_count>1:
-    #     model_module = model.module
-    # else:
-    #     model_module = model
-    if model.has_speaker_embedding():
+    if gpu_count>1:
+        model_module = model.module
+    else:
+        model_module = model
+    if model_module.has_speaker_embedding():
         if g is None:
             raise RuntimeError("WaveNet expects speaker embedding, but speaker-id is not provided")
     else:
         if g is not None:
             raise RuntimeError("WaveNet expects no speaker embedding, but speaker-id is provided")
 
-    if model.local_conditioning_enabled():
+    if model_module.local_conditioning_enabled():
         if c is None:
             raise RuntimeError("WaveNet expects conditional features, but not given")
     else:

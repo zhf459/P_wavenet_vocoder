@@ -168,5 +168,4 @@ def probs_logistic(mu, scale, y, num_classes=65536/2, log_scale_min=-14):
     min_in = inv_stdv * (centered_y - 1. / (num_classes - 1))
     cdf_min = sigmoid(min_in)
     cdf_delta = cdf_plus - cdf_min
-
     return cdf_delta
